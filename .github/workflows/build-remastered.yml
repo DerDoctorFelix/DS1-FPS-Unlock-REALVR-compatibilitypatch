@@ -11,7 +11,7 @@ jobs:
   build:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -26,7 +26,7 @@ jobs:
           copy /y DSR-FPS-Unlock.ini build\artifact\
           copy /y README.md build\artifact\
           copy /y LICENSE build\artifact\
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: DS1-FPS-Unlock-REMASTERED-REALVR
           path: build/artifact/
