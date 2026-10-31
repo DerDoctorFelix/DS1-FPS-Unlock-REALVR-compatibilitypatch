@@ -1,223 +1,140 @@
-# DS1 FPS Unlock: PTDE and Remastered
+# DS1 FPS Unlock: R.E.A.L. VR compatibility fork (Dark Souls: Remastered)
 
-High-FPS unlock with gameplay physics fixes for **Dark Souls: Remastered** and **Dark Souls: Prepare to Die Edition**. Movement, physics, camera, animation and menus stay correct at any frame rate, not just faster. Both games run in real time at 120, 240 or whatever your PC holds, and keep real-time speed when the frame rate dips.
+An unofficial fork of [zofrea1's DS1 FPS Unlock](https://github.com/zofrea1/DS1-FPS-Unlock-PTDE-Remastered) 1.9.0 that makes the Remastered unlocker work together with Luke Ross's **R.E.A.L. VR** mod.
 
-The mods are proxy DLLs. The game's files on disk are never modified, and each mod has an INI with a switch for every fix so you can compare against the retail behaviour.
+R.E.A.L. VR unlocks the frame rate itself, but it does not have the unlocker's gameplay and physics fixes. With R.E.A.L. VR the game runs at about twice the headset's refresh rate (often 180 to 240 FPS), so those bugs are even worse in VR than in 2D. The best-known one: sprinting into a wall or a corner slows the character down for the rest of the sprint. Running the original unlocker next to R.E.A.L. VR does not work either: the game then runs in slow motion. This fork is the compatibility patch between the two. R.E.A.L. VR keeps control of the frame rate, and the unlocker's physics fixes follow the frame time the game really runs at.
 
-Looking for co-op in Prepare to Die Edition? [Prepare to Co-op Edition](https://github.com/zofrea1/DS1-Prepare-to-Coop-PTDE) plays the whole game with up to three friends and includes this mod.
+> [!WARNING]
+> **Offline play only.** Do not play online with this mod, R.E.A.L. VR or any other mod. FromSoftware can restrict ("soft ban") accounts that play online with a modified game. To be safe, this fork **blocks online play by default** (`BlockOnline = true`): the game cannot reach FromSoftware's servers and plays as if they were down. Before you ever play online again, remove every mod from the game folder.
 
-| | Remastered | Prepare to Die Edition |
-| --- | --- | --- |
-| Native frame rate | 60 | 30 |
-| Release | `v1.9.0-REMASTERED-DX11` | `v1.9.0-PTDE-DX9` |
-| Files | `dinput8.dll`, `DSR-FPS-Unlock.ini` | `xinput1_3.dll`, `PTDE-FPS-Unlock.ini` (plus `dxvk_d3d9.dll` for the experimental `DXVK`) |
-| Install next to | `DarkSoulsRemastered.exe` | `DARKSOULS.exe` |
-| Architecture | 64-bit | 32-bit |
-| Works with DSfix | n/a | yes (set `unlockFPS 0` in `DSfix.ini`) |
+This is not an official release of the original mod. Please report problems with this fork here, not to the original author.
 
-## What is fixed
+## Contents
 
-Everything below is on by default and has an INI switch.
+- [Requirements](#requirements)
+- [Install](#install)
+- [What this fork changes](#what-this-fork-changes)
+- [Settings](#settings)
+- [Checking that it works](#checking-that-it-works)
+- [Using it in 2D](#using-it-in-2d)
+- [Known limits](#known-limits)
+- [How it works](#how-it-works)
+- [Building](#building)
+- [Credits and license](#credits-and-license)
 
-| Fix | What it cures at a high frame rate | Remastered | PTDE |
-| --- | --- | :---: | :---: |
-| Frame-rate unlock, variable frame time | The frame cap (`MaxFPS`) only limits the rate; the game's step is the measured frame time | yes | yes |
-| Slope slide | Slide gravity and friction were counted per frame | `FixSlide` | `FixSlide` |
-| Airborne momentum | Jumps and walk-offs lost momentum several times too fast | `FixDamping` | `FixDamping` |
-| Running jumps (low frame rate) | At about 30 FPS a running jump could come out about half as long | `FixJump` | n/a (native rate) |
-| Sprint slowdown (graze) | Running was treated as "stuck on a wall" and slowed | `FixGraze` | `FixGraze` |
-| Ladders | Sliding down dropped you through the floor | `FixMoveDt`, `FixStepDown` | `FixStepDown` |
-| Ledges and lips | The ground snap-down glued you to a curved lip and dragged you down several times faster | `FixStepDown` | `FixStepDown` |
-| Slide contact | On a steep slide the ground flag could miss for one short frame and cancel the slide | `FixSlideContact` (`SlidePtdeSpeed`) | `FixSlideContact` |
-| Slide steering | Turning on a slide barely moved the body: the turn restarts every frame and its root motion was thrown out | `FixSlideSteer` (`SlidePtdeSpeed`) | `FixSlideSteer` |
-| Lock-on camera | Switching targets, locking on, or locking onto an enemy near the screen edge snapped or finished early instead of panning | `FixCamera` | `FixCamera` |
-| Lock-on body turn | The torso, head and hips (and enemies' head and upper body when they track you) swung round several times too fast | `FixLockOnTurn` | `FixLockOnTurn` |
-| Foot IK (stairs and slopes) | The hips followed each step of a staircase several times too fast, so running up or down stairs and slopes bobbed | `FixFootIk` (`FootIkPtdeSpeed` for the original game's speed) | `FixFootIk` |
-| Original game movement | Not a frame-rate problem: Remastered still applies some of the original game's per-frame movement values twice as often (slide friction, graze slow-down, ground snap) and changed two (step height, airborne damping). These switches use the original game's values | `SlideFrictionPtde`, `GrazePtde`, `StepDownPtde`, `StepHeightPtde`, `AirDampingPtde` | n/a (the original) |
-| Ghost replays | Bloodstain and wandering ghost replays ran several times too fast, your own replay data was recorded too densely (it played back in slow motion for other players), ghosts jerked between samples, and ghosts and other players' characters turned too far between updates and snapped back. In PTDE other players' characters were also shown walking when they ran | `FixGhosts` | `FixGhosts` |
-| Particle effects | Emitters that spawn once per frame (smoke, sparks, embers, magic) came out several times too dense | n/a (Remastered's effect data already has the fix) | `FixSfxSpawnRate` |
-| Estus / health bar fill | The bar animation advanced a fixed amount per frame and finished in a few frames; a sprint no longer leaves a yellow part on the stamina bar | `FixUI` (`HudPtdeSpeed` for the original game's speed) | `FixUI` |
-| Sprint stamina drain | Each 0.1 s drain tick was rounded up to a whole frame and the remainder thrown away, so the drain ran slow at frame rates that do not divide 0.1 s evenly (8.7 per second at 61 FPS instead of 10) | `FixStaminaTick` | `FixStaminaTick` |
-| Soul counter | A soul pickup's on-screen counter finished several times too fast | `FixSoulCounter` (`HudPtdeSpeed` for the original game's speed) | `FixSoulCounter` |
-| In-engine cutscene camera | The camera held each 30 FPS key and then jumped, while the characters already moved every frame | n/a | `FixCutsceneCamera` |
-| Loading screen | The bonfire swirl on the loading screen turned at the display rate | `FixUI` | `FixUI` |
-| D-pad hold (down: back to the first quick item) | The hold is counted in frames (15), so it fired during an ordinary tap | `FixDpadHold` | n/a (the hold does not exist) |
-| Bonfire softlock | After resting, the character could stay seated with no menu open | `BonfireFix` | `BonfireUnstick` |
-| Timers | Per-frame fades and countdowns ran too fast: weapon buff glow, ragdoll blend-in, the glow on dropped items | `FixTimers` | `FixTimers` |
-| Smoothing | The follow camera's pivot and look-at point eased toward their targets by a fixed fraction per frame | `FixSmoothing` | `FixSmoothing` |
-| Velocities | The powered ragdoll's pull and the Doppler pitch of moving sounds were worked out from one frame's movement | `FixVelocity` | `FixVelocity` |
-| Script memory | Enemy AI scripts clear out their used memory on a timer, so at a high frame rate several times as much built up between clean-ups; in crowded areas the script memory could run out and the game closed itself | `FixScriptMemory` | `FixScriptMemory` |
-| Menus and mouse | Menu animation, menu input repeat and mouse look scaled to the real frame time | yes (`MenuInputFilter`) | n/a |
-| Cloth | Havok step scaled to the real frame time | yes | n/a |
-| Fullscreen refresh rate | The game only offers 59/60 Hz; ask for the display's real rate, or use borderless | n/a | `FullscreenRefreshRate`, `BorderlessFullscreen` |
-| Direct3D 9 on Vulkan (experimental) | Runs the game through DXVK instead of the Windows Direct3D 9 driver; may or may not help the frame rate, and can have color issues | n/a | `DXVK` (off by default) |
-| Controller | The game only accepts four old XInput device ids, so a pad is missed or another connected device is used instead | n/a | `FixController` |
-| 16:10 and other taller screens | The picture stays 16:9, so the extra height is black bars. The in-game list often has no 1280x800 | n/a | `FixAspect` |
-| Start-up notice and logos | The autosave notice (10 seconds or a button) and the Bandai Namco, FromSoftware and Havok logos play at every start. DSfix's `skipIntro` does not work with every setup and leaves the notice | n/a | `SkipIntro` |
+## Requirements
 
-The original game's 30 FPS physics were tuned for 30 frames per second; both mods are exact at the native rate and very close at every other rate. See [Fix details](#fix-details) for what each fix does.
-
-**Accuracy.** This is very close to the game at its native rate, and more than good enough for casual and serious play. It is not a perfect 1:1 match: retail decides some of these things on a fixed frame grid, so a borderline slope or lip can behave slightly differently at 180 or 240 FPS. Speedrunners and anyone who needs stock-exact precision should not use this.
-
-## Fix details
-
-**Taller screens (`FixAspect`, Prepare to Die Edition).** The projection is locked to 16:9, so on a 16:10 display (the Steam Deck's 1280x800, or 1920x1200) the extra height is black bars and the picture is not stretched. The in-game list often stops at 1280x720, which is why DSfix's borderless mode cannot be pointed at 1280x800 from the menu. When the display is taller than 16:9 and the game asked for a 16:9 mode, the swap chain is sized to the display and the game's screen cameras are given the display's aspect, with the vertical field of view opened so the horizontal view stays the same (on 16:10, 43 to 47.3 degrees). The world, effects, lock-on marker and health bars all use that one projection. The HUD, menus and movies are made for 16:9 and are stretched to fill the screen (about 11% taller on 16:10). A 16:9 display is left alone. Leave DSfix `presentWidth` and `presentHeight` at 0. On a Steam Deck whose game resolution is set to 1280x720, the mod asks for 1280x800; if that picture looks squashed, set the game resolution in Steam to 1280x800.
-
-**Start-up notice and logos (`SkipIntro`, Prepare to Die Edition).** At every start the title screen shows the autosave notice ("This game uses an autosave function...") for 10 seconds or until a button is pressed, checks the save data, then opens the logo screen and waits for its last logo. With `SkipIntro` neither the notice nor the logo screen is opened, so the save data check and then the title screen come up straight away. It works with or without `FPSUnlock`. DSfix's `skipIntro` instead speeds up the game's clock while it sees the Bandai Namco logo, which depends on the game's timing and does not work on every setup.
-
-**Controller (`FixController`, Prepare to Die Edition).** The game decides a DirectInput device is an XInput pad only when its id is one of four values from Windows 7, one per player slot. A current pad does not have those ids, so the game reads it through DirectInput, which is unreliable, and whichever device was enumerated first wins. A second controller, a wheel or a virtual pad is enough to make the real one go dead. The mod still honours those four ids when the device behind one is actually connected. Otherwise it binds a gamepad, preferring the one being held, and a slot that drops out for a moment is kept for half a second before another connected gamepad is tried. Wheels, flight sticks and music controllers are not taken. On the Steam Deck the same DLL has to forward XInput to Wine's controller backend (`xinput1_4`); forwarding to `xinput1_3` calls this mod again and the deck's pad never appears. That forward happens whether or not `FixController` is on. The Deck also needs the launch option `WINEDLLOVERRIDES="xinput1_3=n,b" %command%` so Wine loads this DLL.
-
-**Lock-on camera (`FixCamera`).** The follow camera smooths several things toward a target by a fixed fraction every frame, tuned for the native frame rate: the yaw and pitch, the point it looks at (0.4 sideways, 0.3 vertically while locked on), the camera distance, the pivot that follows your character, the settling back after you let go of the stick, the automatic turn toward your walking direction, stick smoothing and the blend between camera settings when locking on. Every one of them now takes the same real time at any frame rate. Earlier versions scaled only the first two, so a pan from target to target still finished noticeably early.
-
-Turning the camera with the stick or mouse also raises how tightly it follows, for two seconds, then fades that boost out over one second. The timer is real time and keeps running after you lock on. Before 1.5.0 only the base weight was scaled, so during those seconds the camera followed several times too fast above the native rate. The boost is scaled the same way now.
-
-**Lock-on body turn (`FixLockOnTurn`).** A small bone controller bends the hips, spine and head toward an angle: your torso and head toward the locked-on target (including while strafing), your upper body when aiming a bow or crossbow, and an enemy's head and upper body while it tracks you. It moved each bone a fixed fraction of the way every frame (0.6 hips, 0.2 head, 0.1 spine), so at 120 FPS the bending happened four times faster than in the game. Weapons ride on the skeleton, so this is not only cosmetic: enemies' upper bodies tracked you more sharply than in the game. The fix restores the native timing. The whole-body turn (turn speed in degrees per second) was already correct and is unchanged.
-
-**Remastered lock-on speed (`LockOnPtdeSpeed`).** Remastered kept the original game's per-frame camera and body-turn values but runs them at 60 FPS, so its lock-on pan and body turn are twice as fast as Prepare to Die Edition. The INI included with 1.5.0 sets `LockOnPtdeSpeed = true`, which uses the original game's speed for both (that includes enemies' head and upper-body tracking). Set it to `false` for Remastered's own speed. The old name `CameraPtdeSpeed` still works. Since 1.8.0 a missing key also means `true`, as for the movement switches below (1.4.0 to 1.7.0 kept Remastered's speed when the key was missing).
-
-**Original game movement (`SlideFrictionPtde`, `GrazePtde`, `StepDownPtde`, `StepHeightPtde`, `AirDampingPtde`, Remastered).** Remastered's movement code is the original game's, branch for branch, and its movement data is the same. When it moved to 60 FPS, some per-frame values were halved so that they kept their effect per second (slope gravity, the graze speed test). Others were left as they were, so Remastered applies them twice as often as the original game. Since 1.8.0 each of these has a switch that uses the original game's value:
-
-- `SlideFrictionPtde`: slide speed left after sliding off a steep slope is multiplied by 0.65 every frame, so Remastered stops it twice as fast. Remastered also zeroes it below 0.07 m/s, where the original game stops it at 0.1 m/s. Needs `FixSlide`.
-- `GrazePtde`: running into a wall or a corner lowers the speed multiplier by 0.8 a frame, down to half speed, and it recovers by 1.2 a frame afterwards. Remastered reaches half speed in about 50 ms and recovers in about 65 ms; the original game takes about 100 ms and 130 ms. Needs `FixGraze`.
-- `StepDownPtde`: the ground snap pulls the character down onto falling ground by at most 0.4 m a frame. The original game lets go of ground that drops away faster than 12 m/s, Remastered only above 24 m/s, so on a rounded ledge or a steep slope the original game's character starts to fall sooner. Needs `FixStepDown`.
-- `StepHeightPtde`: the highest step the character climbs without jumping is 0.30 m in the original game and 0.31 m in Remastered.
-- `AirDampingPtde`: momentum in the air after walking or running off a ledge fades by 0.95 per 1/30 s in the original game and 0.975 per 1/60 s in Remastered, about 2% less over a second. Needs `FixDamping`.
-
-`HudPtdeSpeed` does the same for the HUD bars: Remastered kept the original game's per-frame steps for the health, stamina and boss bars, so an Estus heal fills the bar and the yellow part of the stamina bar drains away twice as fast as in the original game. With it on (and `FixUI`) the bars move at the original game's speed.
-
-All six are on in the included INI, and also when a key is missing (since 1.8.0 `LockOnPtdeSpeed` and `FootIkPtdeSpeed` are too). Set one to `false` for Remastered's own behaviour. The two games also use different versions of Havok (2010 and 2015) for collisions against walls and corners, which these switches do not change.
-
-**Foot IK (`FixFootIk`).** On stairs and slopes Havok's foot placement puts each foot on the ground and the game lowers the hips so both feet reach. Three steps of it moved a fixed fraction per frame: the hips toward the height the feet need (0.2 of the gap a frame), the hips back to normal when neither foot is on the ground (0.6 left a frame), and the blend of the foot placement in and out (0.2 a frame). At a high frame rate the hips followed each step of a staircase several times faster than at the native rate, so running up or down stairs and slopes bobbed. Each fraction now covers the same real time at any frame rate. In Prepare to Die Edition, with `Trace = true`, Ctrl+0 switches it off and on while playing. Remastered kept the original game's per-frame values at 60 FPS, so its hips settle twice as fast as in the original game; `FootIkPtdeSpeed` (on by default) uses the original game's speed. Remastered's Havok also turns each foot toward the slope a fraction per frame; that follows the frame time at Remastered's own speed, since the original game's Havok has no such step.
-
-**Running jumps (`FixJump`, Remastered).** A running jump does not leave the ground. For the first frames it follows the jump animation, then it keeps the speed from the end of that take-off. At about 30 FPS the take-off is only a few frames, and one of them can have no forward motion. The jump then alternated between stopped and full speed and covered about half the distance, and the sprint-slowdown check cut it further. `FixJump` keeps the faster of those two speeds for the rest of the jump. The height of the arc is unchanged. At 60 FPS and above the two speeds already match, so those jumps are left as they are. Prepare to Die Edition's native rate is 30, and it does not have this key.
-
-**Ghost replays (`FixGhosts`).** Bloodstain replays and wandering ghosts step to the next recorded sample every 10 frames in Prepare to Die Edition and every 20 in Remastered, one sample per third of a second at the native rate. At 120 FPS they played several times too fast. The recorder that captures your own bloodstain and the ghost data sent to other players counts in frames too, so a high frame rate recorded it too densely and other players saw your ghosts in slow motion. Playback and recording now follow real time, matching the native rate exactly.
-
-Between samples a replay turns toward the next recorded facing by a stored amount every frame: a tenth of the turn in Prepare to Die Edition (ten frames per sample) and a twentieth in Remastered. Other players' characters do the same with each network update: a fifth (Prepare to Die Edition) or a tenth (Remastered) of the turn per frame, an update arriving every sixth of a second at the native rate. At a higher frame rate those amounts added up to several times the turn before the next update came, so ghosts and other players spun past their facing and snapped back. The amount is now scaled by the frame time, so each turn takes the time between updates, as at the native rate.
-
-The same sample also stores a step toward the next recorded position. The game reads that step as a direction and a walk or run speed, and it also moves the body by a copy of it every frame. Above the native rate a ghost crossed the gap in the first few frames and then stood still until the next sample, while the walk or run animation kept playing. The copy is now scaled by the frame time, so the ghost moves evenly across the third of a second between samples. The direction and the walk or run speed still come from the unscaled step.
-
-In Prepare to Die Edition another player's character walks, runs or sprints by how far it moved toward its last received position this frame, times 30: a speed in metres per second at the native rate. At a higher frame rate a frame's step is smaller, so a running player was shown walking and a sprint showed only for the odd frame. The factor is now the real frames per second.
-
-**Particle effects (`FixSfxSpawnRate`, Prepare to Die Edition).** Effect files give each emitter a spawn interval. Many use 1/60 s, or 0 for "every frame", which at the native 30 FPS meant one spawn per frame. At a higher frame rate those emitters spawn once per frame, so at 120 FPS smoke, sparks and embers came out up to four times as thick and bright. Remastered fixed this in its data when it moved to 60 FPS: every interval below 1/30 s became exactly 1/30 s (about 3,500 values) and nothing else changed. The mod applies the same rule to each effect as the game loads it, so emitters spawn as densely as at the native rate. Remastered needs nothing: its effect data already has the fix.
-
-**Sprint graze (`FixGraze`).** The game slows a character that barely moved last frame (it assumes a wall). The test is per frame, so at a high frame rate ordinary running failed it. The fix applies the game's own test to real speed with no slack, and the slowdown and recovery per second match the native rate exactly. Earlier Remastered builds gave it some slack, which let a character climb a small step after a few seconds of jitter, which the game never allows.
-
-**Ground snap and ladders (`FixStepDown`).** Every physics step the game lifts the character by its step height, moves it, then pulls it back down onto the ground, at most a fixed distance per step. At a high frame rate the same pull is applied many more times per second, which glued the character to curved lips and pulled it through the floor at the bottom of a ladder slide. The pull is now limited to the native rate per second: the pulls of the frames within the last native frame's time (1/30 s, or 1/60 s in Remastered) together stay within one native pull. Up to 1.7.0 that window held the last 8 frames, so above about 255 FPS (Remastered: 510, or 255 with `StepDownPtde`) it covered less than a native frame and the snap could pull the character down faster than the game does; since 1.8.0 it holds enough frames for any frame rate up to 1000. (Prepare to Die Edition called this `FixLadder`; that name still works.)
-
-Only the pull counts against that limit: how far below its moved position the snap puts the character. Up to 1.7.0 the character's whole descent was counted, including its own movement down a slope. On a fast slide, such as the slopes in the Depths and before the Bed of Chaos, the slide's own speed could use up the limit. The character could then lose the ground when steered to the side, and the game treated it as airborne: its speed was clamped, the slide braked, and the slide sound stopped. 1.8.0 counts only the pull, as the game itself does at the native rate.
-
-In Remastered, a ladder slide at about 30 FPS moved far enough in one frame to look like that lift had been skipped. The snap was then cut on every frame of the slide, and the character rose instead of sliding down. The lift is now read from the lifted position, so a real slide is left alone.
-
-**Slide contact (`FixSlideContact`).** A steep slide records "feet on the slide" once a frame (bit 0 of a byte the game hands to the character's behaviour graph). At a high frame rate that record can miss for a single short frame at the lip, and the slide animation cancels. The game at its own rate is only ever as strict as one of its frames, so the record is kept until it has been missing for that long: 1/30 s of the original game, 1/60 s of Remastered (`SlidePtdeSpeed`). The hold is 95% of that so that frame-time jitter near the native rate cannot switch it on and off. At the native rate and below no frame is held, so the game there is exactly as before: with `SlidePtdeSpeed` off that is 60 FPS and below, with it on 30 FPS and below. At 120 FPS one frame is held (three with `SlidePtdeSpeed` on), at 240 FPS three (seven). A gap longer than a quarter of a second, such as a load, drops the record. The physics contact flags themselves are unchanged.
-
-**Slide steering (`FixSlideSteer`).** Turning on a slide restarts the turn animation every frame, so the only live layer is one frame old. Havok scales the root motion by (total layer weight / 0.1) when that weight is under 0.1, and a layer's weight after t seconds is a smoothstep of t over its blend time, about 3 (t / blend time)^2 for a frame. So the body moves (frame time)^3 / 0.1 per frame and (frame time)^2 / 0.1 per second: the higher the frame rate, the less of the turn reaches the body (the legs play it, the body barely moves). While that root-motion query runs, the 0.1 threshold is multiplied by (frame time × rate) squared, where rate is 60 (30 with `SlidePtdeSpeed`), so the turn covers the same distance per second at any frame rate. Remastered kept the original game's blend times and runs at twice the rate, so out of the box its slide turn carries a quarter of the original game's weight at 60 FPS: with `SlidePtdeSpeed` on the threshold is a quarter at 60 FPS and the slide steers as in the original game; with it off, 60 FPS is left exactly as it is and other frame rates are matched to it. Below the rate the factor grows to at most 4 (30 FPS with the Remastered rate), because the weight stops growing as the square once a frame is a large part of the blend time. The stored threshold and the pose blending that uses it are unchanged.
-
-**HUD bars (`FixUI`).** The health, stamina and boss bars move toward a new value by a fixed step every frame, so at a high frame rate an Estus heal was over in a few frames. The step now covers the same real time at any frame rate. The step is also the game's threshold for the yellow part of a bar: a change no bigger than one step is shown at once, and a bigger one holds the old value for a moment (1.5 s on the stamina bar) before it drains. A sprint takes one stamina point every 0.1 s, less than a step, so in the game it never leaves a yellow part. Before 1.8.0 the threshold was scaled with the step, so at a high frame rate each sprint point started that hold and a yellow part grew, vanished and came back for as long as the sprint lasted. Since 1.8.0 a step is scaled only while the bar is already moving, so the threshold is the game's own. The bonfire swirl on the loading screen also turns at the native speed.
-
-**Sprint stamina drain (`FixStaminaTick`).** One point every 0.1 s, but the game rounded each tick up to a whole frame and dropped the remainder. The remainder is kept, so the drain is 10 points a second at any frame rate.
-
-**Soul counter (`FixSoulCounter`).** The souls picked up are counted on the HUD by a step that grows with the amount still left, added once a frame. At a high frame rate a large pickup finished several times too soon. The step is multiplied by the frame time over 1/30 s with `HudPtdeSpeed` on (the original game's speed) or over 1/60 s with it off (Remastered's own, twice as fast), and the fraction carries to the next frame. The counter still stops on the real total. One update adds at most four of the game's steps, so a hitch does not skip the count ahead.
-
-**In-engine cutscene camera (`FixCutsceneCamera`, Prepare to Die Edition).** The characters in a real-time cutscene already move every frame. The camera picked the nearest 30 FPS key and held it, so at 60 FPS it held for two frames and then jumped. Position and rotation are now blended by the amount the game already computed between those keys. A real cut (more than a metre, or more than half a radian) still snaps, and so does a pair of keys more than one and a half frames apart. Pre-rendered movies stay 30 FPS. The zoom track already blended and is unchanged. Nothing about this is sent to other players.
-
-**Timers, camera easing and velocities (`FixTimers`, `FixSmoothing`, `FixVelocity`).** Every place in both executables that loads a frame-like constant (30, 60, 1/30, 1/60) was checked, and the matching code of the two games was compared: FromSoftware changed such a constant from 30 to 60 in Remastered only where it counts per frame, which points out the per-frame ones. These were still tied to one fixed frame:
-
-- `FixTimers`: the weapon buff glow fading in and out, the blend from animation into ragdoll, the glow on dropped items, and (Remastered) a load queue countdown. Each advanced 1/30 s (PTDE) or 1/60 s (Remastered) per frame.
-- `FixSmoothing`: the follow camera's pivot and look-at point move a fixed fraction of the remaining gap each frame. They now cover the same fraction per second at any frame rate.
-- `FixVelocity`: the powered ragdoll (which pulls a body toward a pose) and the speed of moving sounds, which FMOD uses for the Doppler pitch shift, were worked out as one frame's movement times 30 (PTDE) or 60 (Remastered). At 120 FPS the ragdoll pull and the pitch shift were a quarter (PTDE) or half (Remastered) as strong as intended. They now divide by the real frame time.
-
-In PTDE the engine's 1/30 step is rewritten with the frame time every frame, so the few places that copy it once into a setting (the Havok world setup, an image filter, the input repeat intervals registered after a key rebind) now read a fixed 1/30 instead of whatever the frame time was at that moment.
-
-**Script memory (`FixScriptMemory`).** The enemy AI and one other set of game scripts run in Lua, and FromSoftware turned off Lua's own clean-up of unused script memory. The game instead clears each set out on a timer: every half second for the AI, every second for the other. The scripts use up memory every frame they run, and at the native rate that timer meant a clean-up every 15 frames (PTDE) or 30 frames (Remastered). At 360 FPS a half second is 180 frames, so six times as much (Remastered) or twelve times as much (PTDE) built up between clean-ups. In a crowded area such as Blighttown or the Catacombs the AI's script memory ran out, the script that asked for more raised an error that nothing in the game catches, and the game closed itself. While closing, a background thread used a part of the game that had already been shut down, so the crash report shows a "pure virtual function call" and no `CRASH:` line. The 1.6.0 reports at 360 FPS were this. With the fix, each clean-up comes at least every 15 or 30 frames as at the native rate, and still every half second (or second) of real time at a lower frame rate. Each clean-up costs what it did at the native rate, and they come once per the same number of frames, so the share of frame time they take is the same as at the native rate.
-
-**D-pad hold (`FixDpadHold`, Remastered).** Holding down on the D-pad returns to the first quick item after 15 frames, a quarter of a second at 60 FPS but an eighth at 120, so an ordinary tap could trigger it. The hold is timed in real time: a quarter of a second at any frame rate, including below 60 FPS.
-
-**Bonfire softlock (`BonfireFix` on Remastered, `BonfireUnstick` on Prepare to Die Edition).** After resting, the bonfire menu can disappear while the character stays seated, and nothing responds until the game is quit. If one of the three idle sits lasts a second and no menu is open, the mod tells the character to stand. Prepare to Die Edition watches the fields published with FPSFix+. Remastered watches the 2022 executable's own menu-open fields and writes the local player's seated animation id. Both are on by default, including when the key is missing from an older INI. Remastered also accepts the name `BonfireUnstick`.
-
-## Supported versions
-
-Only the current Steam builds are supported. Anything else is unsupported and may refuse to patch (the log says why) or misbehave.
-
-- **Remastered:** Steam build, SHA-1 `9150CC63C617332ED3C2C66E7566ED67E3292DA0` (1.03.1, 2022-10-11).
-- **PTDE:** Steam build, `SizeOfImage` `0x11C2000`.
-
-Back up your saves. **Remastered is well tested with Seamless Co-op; PTDE is well tested with DSfix.** Other multiplayer (the official servers) has not been tested, so play offline there.
-
-**Online play: no guarantees, use at your own risk.** The mods change the game's code in memory while it runs. Some fixes also change data the game exchanges with other players (for example the ghost replay data), now matching the native frame rate. FromSoftware's anti-cheat could still treat any modification as cheating, and a ban (including a soft ban) is possible. The authors accept no responsibility for bans, lost progress or anything else that results from using these mods; see also the [LICENSE](LICENSE) (provided "as is", without warranty).
-
-**Prepare to Co-op Edition.** Prepare to Co-op Edition, a co-op mod for Prepare to Die Edition by the same author, is a separate mod with [its own repository](https://github.com/zofrea1/DS1-Prepare-to-Coop-PTDE). It is built on this mod and includes it: its `xinput1_3.dll` is this mod plus the co-op, and its settings file, `PTDE-Coop-FPS-Unlock.ini`, has this mod's settings as well as its own (that build also reads a `PTDE-FPS-Unlock.ini`, but only when no `PTDE-Coop-FPS-Unlock.ini` is there). If you have Prepare to Co-op, you have the FPS Unlock; do not install both.
-
-## Recommended display mode
-
-- **Remastered: borderless fullscreen** gives the best compatibility with monitors, frame pacing and VRR.
-- **PTDE: exclusive fullscreen** gives the best compatibility with monitors, frame pacing and VRR (with `FullscreenRefreshRate = 0` to use your display's real refresh rate).
+- **Dark Souls: Remastered, current Steam build** (1.03.1, executable SHA-1 `9150CC63C617332ED3C2C66E7566ED67E3292DA0`). Like the original mod, this fork checks the executable and refuses to patch anything else.
+- **R.E.A.L. VR** by Luke Ross, from his Patreon. It is not included here. Tested with R.E.A.L. VR 2607.31.1.
+- Windows, 64-bit.
 
 ## Install
 
-Copy the files from the release for your game next to the game's exe (see the table above; PTDE's `dxvk_d3d9.dll` is only needed for the experimental `DXVK`). To uninstall, delete them. `FPSUnlock` is the master switch: `false` turns every part of the mod off and leaves the game unchanged, except PTDE's `SkipIntro`, which has its own switch.
+1. Install R.E.A.L. VR as usual. Its installer puts `dxgi.dll` in the game folder; leave it there.
+2. Copy `dinput8.dll` and `DSR-FPS-Unlock.ini` from the release next to `DarkSoulsRemastered.exe`. If the original FPS unlocker is installed, replace its two files. Do not rename the DLL.
+3. Start the game the way R.E.A.L. VR tells you to.
 
-**Remastered.** The game imports `dinput8.dll`, so that file name has to stay. Another mod that also installs `dinput8.dll` needs a chain loader before the two can load together. In `System -> PC Settings -> Display`, set Frequency to the monitor refresh rate and Vertical sync to off, then restart the game after changing `MaxFPS`.
+The INI is read from the folder the DLL is in, and the log `DSR-FPS-Unlock.log` is written there.
 
-**PTDE.** The mod loads as `xinput1_3.dll` so it can sit beside DSfix. In exclusive fullscreen it can ask for your display's highest refresh rate instead of the 60 Hz the game offers (`FullscreenRefreshRate`), and it has an optional borderless mode (`BorderlessFullscreen`; set the game to windowed first).
+**Uninstall:** delete `dinput8.dll` and `DSR-FPS-Unlock.ini`. The mod changes the game only in memory while it runs. No game file or save is modified.
 
-**PTDE: DXVK (experimental).** `DXVK = true` runs the game's Direct3D 9 on Vulkan through [DXVK](https://github.com/doitsujin/dxvk) (version 3.1.1, included as `dxvk_d3d9.dll`; keep it next to `xinput1_3.dll`). It is experimental and off by default. It may or may not improve the frame rate on your system: it helps most where the Windows Direct3D 9 driver is the bottleneck, and on a fast GPU with a fast driver the difference can be small. It can also have other issues, such as wrong colors, crushed blacks or an inaccurate gamma curve (seen with DXVK's own `d3d9.dll` installed by hand too, so it is not specific to this mod). DSfix keeps working on top of it. It needs a graphics driver with Vulkan 1.3. If DXVK cannot start, the game runs on Direct3D 9 as usual and the log says why. The first time an area loads, DXVK compiles its shaders, which can cause brief hitches; they are cached for later runs. DXVK writes its own log, `DARKSOULS_d3d9.log`, next to the game, and reads an optional `dxvk.conf` from there. If the game folder already has a `d3d9.dll` (DXVK or ReShade installed by hand), that one stays in charge and `DXVK` does nothing. With `DXVK = false` (the default) or `FPSUnlock = false`, DXVK is not loaded at all.
+## What this fork changes
 
-`MaxFPS` defaults to 120 in both and accepts 10 to 1000; a value outside that range is clamped to the nearest end. Pick what your PC can usually hold; dips below it do not slow the game. A low cap works too: both games run in real time at any frame rate down to 10 FPS, so a slower PC can cap at 30 for steady frame pacing. (In Remastered before 1.4.0 a cap below 60 broke the frame pacer, which then waited longer every frame; it now holds any cap exactly. Remastered also no longer drops a frame when a frame comes in a little late, which made a frame rate held below the cap, or a cap set outside the game, hitch.) (Frames longer than 1/8 s, below 8 FPS, are each treated as 1/8 s, so a hitch or a loading stall does not become one huge step.)
+Everything else is the original 1.9.0. All of its physics, camera, animation, HUD and timing fixes are kept, and the original README is kept as [README-original.md](README-original.md).
 
-**PTDE: where the cap waits (`FPSLimitPoint`).** `early` (the default) waits at the start of each frame, before the game reads the controller, keyboard and mouse: the least input lag. `present` waits on the draw thread right before the frame is shown, gameplay and loading screens alike, after that input has been read: the most even frame timing, with slightly more input lag. Both keep the same schedule, `MaxFPS` stays the rate, and only the named point waits. A change of rate in game (Trace's keys) is taken safely, and the game is never left uncapped: if the `present` hooks cannot be placed, the cap waits at the frame boundary as 1.8.0 did. Restart the game after changing it.
+| Change | Setting | What it does |
+| --- | --- | --- |
+| R.E.A.L. VR compatibility | `ExternalFrameUnlock` | Leaves the frame rate to R.E.A.L. VR and passes its time steps through, instead of scaling them a second time (that was the slow motion). The physics fixes follow the step the game really uses. |
+| Fixes install next to R.E.A.L. VR | (always) | With R.E.A.L. VR loaded, almost no memory was left close to the game's code, and most of the original's fixes failed to install. Only a few got through, among them the sprint fix. They now all install. |
+| Sprint fix watchdog | (always) | Checks every 2 seconds that the sprint (wall graze) fix is still in place and puts it back if anything undid it. |
+| VR camera | `FixCamera = false` | The follow camera stays tight around the character's torso, as with R.E.A.L. VR alone. |
+| No recenter on lock-on without a target | `NoLockOnRecenter` | Pressing lock-on (R3) with nothing to lock onto no longer swings the camera behind the character, which is jarring in VR. Locking onto enemies is unchanged. |
+| Skip the start-up logos | `SkipIntro` | Goes straight to the title screen. |
+| Block online play | `BlockOnline` | Keeps the game off FromSoftware's servers (see the warning above). |
+| Camera diagnostics | `CameraProbe` | For development only, off by default. |
 
-## Notes and known limits
+## Settings
 
-- **Remastered lock-on speed.** Remastered pans the lock-on camera and turns the body toward the target twice as fast as the original (it kept the original game's per-frame values at 60 FPS). The INI included with 1.5.0 sets `LockOnPtdeSpeed = true`, which uses the original speed for both (the old name `CameraPtdeSpeed` still works). Set it to `false` for Remastered's own speed.
-- **Short steps after riding the edge (PTDE).** Walking along a short step at a sharp angle can leave the character riding its edge. At 30 FPS turning into the step then crosses it; at a high frame rate the character can get stuck against it like a low wall. The game decides step-ups once per physics step, and stepping the physics every frame changes the outcome on this borderline case. Running the player's physics at a fixed 30 steps a second does fix it, but needs interpolation that adds visible delay, so it is not included.
-- **PTDE cutscenes.** Character animation in an in-engine cutscene already advances every frame. `FixCutsceneCamera` blends the camera between its 30 FPS keys; a hard cut still snaps. Pre-rendered movies are 30 FPS by nature.
-- **Camera speeding up (Remastered, reports with 1.2.0).** Players reported the free camera suddenly speeding up, especially when running at an angle to it. Remastered's camera already swings toward your running direction faster than the original game's (it kept the original per-frame values at 60 FPS), and in 1.2.0 the blend between the camera's follow settings (how tightly the pivot and the look-at point follow your character) still ran once per frame, so at a high frame rate those changes finished two to four times sooner. 1.3.0 fixed that blend (`FixSmoothing`). 1.5.0 also scales the extra follow that lasts for two seconds after you turn the camera with the stick or mouse (`FixCamera`); without it, that part still finished several times too fast above 60 FPS, including just after locking on. If the camera still misbehaves, send the log: it has a mouse line once a minute while the mouse moves. `LockOnPtdeSpeed = true` (on in the 1.5.0 INI) also makes the camera settle at the original game's slower speed.
-- **First walk-to-run (Remastered).** The retail game has a short hitch on the first walk-to-run after standing still. At a high frame rate it reads as a brief freeze of the character and camera; it is left as it is.
-- **Bonfire softlock.** After rest the menu can close while the character stays seated and nothing responds. `BonfireFix` (Remastered) and `BonfireUnstick` (Prepare to Die Edition) are on by default. Each waits one second in that state, then tells the character to stand. The log line is `Bonfire softlock: no menu open for a second while seated`. If the character stays seated and that line never appears, send the log.
-- **Very high frame rates.** 240 FPS is not sustainable on every PC. Below the cap the game still plays in real time.
-- **Very low frame rates.** Down to 10 FPS the game keeps real time, but each physics step is long (six times a 60 FPS step at 10 FPS). The game pulls a character down onto the ground by at most a fixed distance per step, so around 10 to 15 FPS a character sprinting down steep stairs or slopes can briefly leave the ground. This is the same rule that makes the original 30 FPS game slightly looser than Remastered's 60.
-- **Weapon durability and hit windows.** Worth checking if you depend on exact timing.
+All settings are in `DSR-FPS-Unlock.ini`, and the file explains each one. Restart the game after changing any of them.
 
-## Logs and bug reports
+### New settings
 
-Each mod writes a log next to its DLL (`DSR-FPS-Unlock.log` or `PTDE-FPS-Unlock.log`) with a heartbeat every 30 seconds. The first lines show the version, the exe check and each patch applied. With `DXVK = true` the PTDE log says whether DXVK started and on which GPU, and DXVK's own `DARKSOULS_d3d9.log` is in the game folder. If the game freezes, the log says when the simulation stopped advancing; a crash writes a `*-crash.dmp` next to the DLL and a `CRASH:` line to the log. If a game script hits an error the game does not handle, the game closes itself; the log then has a `SCRIPT:` line saying which scripts failed and why. The heartbeat also shows how much memory the scripts use (`script memory MB (low-high)`). Send the log and any dump with a bug report.
+| Setting | Default in the INI | Description |
+| --- | --- | --- |
+| `BlockOnline` | `true` | The game cannot look up or connect to FromSoftware's servers, so it plays offline: no summons, invasions, messages or bloodstains from other players. Connections to your own PC and Steam itself are not affected. This works even with `FPSUnlock = false`. Only set it to `false` with every mod removed. |
+| `ExternalFrameUnlock` | `true` | `true`: R.E.A.L. VR (or another mod) unlocks the frame rate. This mod leaves the game's frame pacer alone, does not cap the frame rate, and changes a time step only when it is still the game's fixed 1/60 s. `false`: the original stand-alone unlocker, for the 2D game. |
+| `ReplaceRetailSteps` | `true` | With `ExternalFrameUnlock`: a step that is still the fixed 1/60 s (R.E.A.L. VR did not change it) is replaced by the measured frame time, so that part of the game does not run too fast. If the game ever runs in slow motion with R.E.A.L. VR, set this to `false`: then no step is changed at all, and only the physics fixes follow the frame time. |
+| `SkipIntro` | `true` | Skips the start-up logos and goes straight on to the title screen. |
+| `NoLockOnRecenter` | `true` | Lock-on (R3) with nothing to lock onto leaves the camera where it is, instead of turning it behind the character over 0.3 s. |
+| `FixMouse` | `true` | Mouse look follows the frame time (the original mod always did this). If mouse look is far too fast or too slow in VR, set `false`. |
+| `FixHavokStep` | `true` | The Havok cloth step follows the frame time (the original mod always did this). With `ExternalFrameUnlock` only a step that is still the fixed 1/60 s is scaled, so it cannot double up with R.E.A.L. VR. |
+| `CameraProbe` | `false` | Diagnostic: logs what the lock-on button changes in the follow camera. Leave it off. |
 
-The `[Diagnostics]` INI section has development tools (recordings, watchpoints). Leave them off.
+### Changed defaults
 
-## Build
+| Setting | Original | VR preset | Why |
+| --- | --- | --- | --- |
+| `FixCamera` | `true` | `false` | With `true` the follow camera lags behind the character as in the 2D game, which feels wrong in VR. With `false`, lock-on target switches also snap faster, as with R.E.A.L. VR alone. |
+| `MaxFPS` | `120` | `120` | Unchanged, but it does nothing in VR. R.E.A.L. VR sets the frame rate: with its alternate eye rendering, the game runs at twice the headset's refresh rate, or at 1/2 or 1/3 of that with AER v2's "1/2 rate" and "1/3 rate" modes. It only matters with `ExternalFrameUnlock = false`. |
 
-Visual Studio 2022 (MSVC, `/MT`):
+**A setting missing from the INI** behaves as in the original mod: `ExternalFrameUnlock = false`, `FixCamera = true`, `NoLockOnRecenter = false`. The two exceptions are `BlockOnline` and `SkipIntro`, which default to `true`. So an INI from the original 1.9.0 gives the original behaviour, with online play blocked and the logos skipped.
 
+## Checking that it works
+
+Open `DSR-FPS-Unlock.log` next to the DLL after playing. Near the top you should see:
+
+- `BlockOnline: online play is blocked (4 of 4 Winsock imports redirected, Steam build table ...)`
+- `SkipIntro: start-up logos skipped`
+- `... active in ExternalFrameUnlock mode ...`
+- after loading a save, `Cave block 1 at ...` followed by one line for each fix (for example `Sprint graze check retargeted ...`), and **no** `Could not allocate ... (Win32=487)` errors.
+- `Simulation step #120: ... (set by the other mod, passed through)`, which shows that R.E.A.L. VR is supplying the time step.
+- once a minute, `Sprint graze check #...: patch in place`.
+
+If you try to log in, `BlockOnline: blocked connection (connect)` shows that the block stopped the game reaching the server.
+
+## Using it in 2D
+
+The DLL also works without R.E.A.L. VR. For the 2D game, set:
+
+```ini
+ExternalFrameUnlock = false
+FixCamera = true
 ```
-build.bat
-```
 
-builds both targets. `build_dsr.bat` and `build_ptde.bat` build one each. `build_ptde.bat` also downloads DXVK 3.1.1 from its GitHub release once (`tools\fetch_dxvk.ps1`, SHA-256 checked) and puts its 32-bit `d3d9.dll` in `build\ptde\dxvk_d3d9.dll`.
+Then it behaves like the original 1.9.0, with `MaxFPS` as the frame cap, plus `BlockOnline`, `SkipIntro` and `NoLockOnRecenter`. In the game, under System -> PC Settings -> Display, set Frequency to your monitor's refresh rate and Vertical sync to off, as the original mod asks. To be sure of the original behaviour in 2D, you can of course just use the original mod.
 
-| Game | Output |
-| --- | --- |
-| Dark Souls Remastered (64-bit) | `build\dsr\dinput8.dll` |
-| Dark Souls: Prepare to Die Edition (32-bit) | `build\ptde\xinput1_3.dll` |
+## Known limits
 
-The PTDE sources are listed in `src\ptde\sources.txt`. Another mod can be built into the same `xinput1_3.dll` on top of this one: it compiles that list with its own sources and its own `ptde_extension()` (see `src\ptde\extension.h`) instead of `extension_none.cpp`, and keeps its settings in `PTDE-FPS-Unlock.ini` (`settings_read_keys`). [Prepare to Co-op Edition](https://github.com/zofrea1/DS1-Prepare-to-Coop-PTDE) is built that way.
+- Tested on one PC and one headset, with R.E.A.L. VR 2607.31.1. Later R.E.A.L. VR versions may behave differently. If the game runs in slow motion or too fast, send the log.
+- Only the 2022 Steam build is supported. On any other build the mod refuses to patch, like the original.
+- `BlockOnline` is tested on the Steam build. On any other build it falls back to finding the network functions by name, which the game's copy protection may prevent. Check the log line.
+- `FixMouse` with R.E.A.L. VR has not been tested much, since VR is usually played with a controller.
+- The Prepare to Die Edition part of the original repository is unchanged. This fork is about Remastered only.
 
 ## How it works
 
-**Remastered.** The retail frame pacer counts frames as the performance counter times 60, measures how many have passed, and waits for the next one. The simulation, effect, Havok and menu steps are given a fixed 1/60 s each displayed frame. The mod gives the pacer's measurement and its wait one clock that runs at `MaxFPS`/60 of real time, so it paces at `MaxFPS`, and reports a frame that is only one to three frames late as on time instead of letting the game drop the next frame to catch up. It hands the steps the real time each frame took. The movement fixes scale the per-frame constants found in the executable.
+Addresses are offsets in `DarkSoulsRemastered.exe` 1.03.1 (image base `0x140000000`). See `src/dsr/patches.cpp`, `offline.cpp` and `skipintro.cpp`.
 
-**PTDE.** The game runs at a fixed 1/30 s step. The mod writes the measured frame time into that step every frame, caps the rate with a precise wait, and stops the render thread waiting two vertical blanks per frame (the change DSfix makes). `FPSLimitPoint` chooses the wait. `early` (the default) waits on the game thread at the start of each frame, before the controller, keyboard and mouse are read: the least input lag. `present` waits on the render thread immediately before the frame's first Present that shows a new picture (gameplay, loading screen or any other screen); the catch-up re-present is not waited on again. It gives the most even frame timing, with slightly more input lag. Only the named point waits. If the chosen point cannot be hooked (another mod, or an unexpected build), the cap waits where 1.8.0 did, when the render thread takes the next frame, so there is always a cap. The same physics constants were found in the PTDE executable by the same method, and are scaled with the frame time.
+- **External frame unlock.** The original mod paces the game itself, and it hands every scheduler step (simulation, effects, menus, cinematics, Havok) the real frame time by scaling the game's fixed 1/60 s. R.E.A.L. VR already hands those steps the real frame time, so the original scaled them a second time, and the game ran at frame time x 60 of its speed (slow motion). In `ExternalFrameUnlock` mode the frame pacer hooks are not installed, the step hooks chain onto whatever is in their slots, and a step is scaled only if it is exactly the game's fixed 1/60 s. The Havok relay does the same check in its stub (`ucomiss`). The physics constants are recomputed every frame from the step the simulation really receives.
+- **Memory for the fixes.** Each fix needs a small block of memory within 2 GB of the game's code. R.E.A.L. VR's allocations leave almost no free 64 KB blocks above the game image, so `alloc_near` failed with `ERROR_INVALID_ADDRESS` (487) for nearly every fix. The allocator now searches above and below the image, and splits each 64 KB block into 4 KB pages.
+- **Sprint fix watchdog.** About every 2 seconds the simulation hook checks that the three retargeted operands of the wall graze check (`0x379B9B`, `0x379BB9`, `0x379BEC`) still point at the mod's values. If they don't, it logs the bytes it found and patches them again.
+- **NoLockOnRecenter.** The player's lock-on handler (`0x40B0F0`) asks the camera manager for a lock-on when it finds a target (`0x40BCD8`), and otherwise for a recenter (`0x40BD1C`: `[mgr+0xA2] = 1`). The manager passes the recenter request on to the follow camera (`0x234BA7`, `[cam+0x262]`), which turns behind the character over 0.3 s (`0x237EB5`). The fork changes the 1 stored at `0x40BD1C` to 0 (after checking the bytes), so the recenter is never requested. No other user of the camera manager's recenter is affected.
+- **SkipIntro.** The title screen is a step machine (`TitleStep_forWin32`). Its handler table at `0x1C8B080` is filled by a static initializer, and on PC step 3 (`STEP_NO_Logo`, `0x803330`) waits for the menus and then opens the logo screen (dialog 60). The fork replaces that one table entry, after checking entries 3 to 5, with a function that does the same wait and then goes on to step 5. No game code changes, which matters because the game's copy protection rejects code writes during the first seconds after start-up.
+- **BlockOnline.** The game reaches FromSoftware's servers with its own Winsock calls. Its import table entries for `getaddrinfo`, `gethostbyname`, `connect` and `sendto` (`0x2017DBC`, `0x2017DF4`, `0x2017E94`, `0x2017D7C`) are pointed at wrappers: name lookups fail, and connections to anything but this PC (`127.0.0.0/8`, `::1`) fail with "network unreachable". The copy protection garbles the import names in memory after start-up, so the slots are taken from this build's table, not found by name. A guard thread puts the wrappers back if anything rewrites the slots. In testing, the login was stopped at `connect`: the game connects to an IP address directly, without a name lookup.
+- **CameraProbe.** Snapshots the follow camera after each update, and logs every field that changes in the second after a lock-on press. This is how the recenter fields were found.
 
-Both mods check the bytes they patch before writing, so on an unsupported build they refuse rather than corrupt anything.
+## Building
 
-**PTDE with DXVK.** The game and DSfix both bind to the Windows `d3d9.dll` before the mod loads, and DSfix hooks its `Direct3DCreate9`. When the game first calls it, the mod loads `dxvk_d3d9.dll`, has DXVK create its Direct3D 9 object once on a separate thread (DXVK ends the process if it cannot start, so this test runs where a failure only ends that thread), and only then makes the Windows `Direct3DCreate9` jump to DXVK just past its first instruction bytes. Whatever hooks that function, DSfix included, then wraps DXVK's objects instead of the Windows ones.
+- **MSVC (official):** `build_dsr.bat`, from a Visual Studio 2022 developer prompt or with VS 2022 Community or Enterprise installed. The output is `build\dsr\dinput8.dll`. `package_release_vr.bat` then makes the release zip.
+- **GitHub Actions:** `.github/workflows/build-remastered.yml` builds the DLL with MSVC on every push. Download it from the run's artifacts.
+- **Linux (development only):** `build_dsr_mingw.sh` cross-builds with clang and mingw-w64. Releases should be built with MSVC.
+- The Prepare to Die Edition build (`build_ptde.bat`) is unchanged.
 
-## Acknowledgements
+## Credits and license
 
-- `BonfireFix` and `BonfireUnstick`: the idea, the Prepare to Die Edition addresses and the three bonfire sit animation ids come from [FPSFix+](https://github.com/SeanPesce/FPSFix-Plus) by Sean Pesce, itself a remake of NullBy7e's FPSFix, both for this same bug. Remastered uses that idea and those animation ids. Its local player, the animation id and the menu-open fields were read from the 2022 Steam executable. The world-character and menu-manager globals are the ones [DSR-Gadget](https://github.com/JKAnderson/DSR-Gadget) finds with its signatures. FPSFix+ and DSR-Gadget are GPL-3.0. The code here is written from scratch and no code was copied.
+- **zofrea1:** DS1 FPS Unlock, the original mod, which does all the real work this fork builds on. MIT License.
+- **Luke Ross:** R.E.A.L. VR (not included, available on his Patreon).
+- **bladecoding:** the DS3 / Elden Ring / PTDE "Remove Intro Screens" mod showed the approach of patching the title screen's logo step.
+- Fork by **DerDoctorFelix**.
 
-- `DXVK` (PTDE): [DXVK](https://github.com/doitsujin/dxvk) by Philip Rebohle and contributors, included unmodified (`x32/d3d9.dll` from the v3.1.1 release, renamed `dxvk_d3d9.dll`) under the zlib/libpng license; see `DXVK-LICENSE.txt` in the PTDE release or [third_party/dxvk/LICENSE](third_party/dxvk/LICENSE).
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+Released under the MIT License, like the original. See [LICENSE](LICENSE). Dark Souls is a trademark of Bandai Namco Entertainment and FromSoftware. This project is not affiliated with them, or with Luke Ross.
