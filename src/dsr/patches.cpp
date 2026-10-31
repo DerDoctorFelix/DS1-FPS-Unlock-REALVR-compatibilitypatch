@@ -142,14 +142,26 @@ float current_step() {
     return g_frame_dt.load(std::memory_order_relaxed);
 }
 
+// The retail fixed step every scheduler task gets (1/60 s).
+bool is_retail_step(float frame_time) {
+    return std::fabs(frame_time - (1.0f / 60.0f)) < 1.0e-7f;
+}
+
+// With ExternalFrameUnlock another mod already hands out real steps: a step that is not the retail
+// 1/60 is that mod's and is passed through unchanged (scaling it again slowed the whole game down).
 float scaled_frame(float frame_time) {
+    if (g_external_unlock.load(std::memory_order_relaxed) != 0 &&
+        (!is_retail_step(frame_time) || g_replace_retail.load(std::memory_order_relaxed) == 0)) {
+        return frame_time;
+    }
     return frame_time * 60.0f * current_step();
 }
 
 // The retail scheduler hands every displayed frame a 1/60 step, including the
 // dormant 140 Hz flipper. Callers that already pass 1/TargetFPS are left alone.
 float correct_repeat_time(float frame_time) {
-    if (g_scheduler_active.load(std::memory_order_acquire) == 0) {
+    if (g_scheduler_active.load(std::memory_order_acquire) == 0 ||
+        (g_external_unlock.load(std::memory_order_relaxed) != 0 && g_replace_retail.load(std::memory_order_relaxed) == 0)) {
         return frame_time;
     }
     const float step = current_step();
@@ -181,8 +193,11 @@ bool pacer_call_matches(uint32_t return_rva, void** qpc_iat) {
 }
 
 bool validate_static_sites() {
+    const bool external = g_external_unlock.load(std::memory_order_relaxed) != 0;
     g_qpc_iat = reinterpret_cast<void**>(image_rva(kBuild.qpc_iat));
-    if (!*g_qpc_iat || !executable(*g_qpc_iat) ||
+    if (external) {
+        LOG_INFO("ExternalFrameUnlock: the frame pacer is left to the other mod");
+    } else if (!*g_qpc_iat || !executable(*g_qpc_iat) ||
         !pacer_call_matches(kBuild.pacer_first_return, g_qpc_iat) ||
         !pacer_call_matches(kBuild.pacer_loop_return, g_qpc_iat) ||
         !pacer_call_matches(kPacerMeasureReturn, g_qpc_iat)) {
@@ -210,6 +225,11 @@ bool validate_static_sites() {
         void* value = *reinterpret_cast<void**>(image_rva(slot.slot));
         void* expected = image_rva(slot.fn);
         if (value != expected) {
+            if (external && value && executable(value)) {
+                LOG_INFO("%s vtable is %p, expected %p: another mod hooked it, chaining onto it", slot.name, value,
+                         expected);
+                continue;
+            }
             LOG_ERROR("%s vtable is %p, expected %p", slot.name, value, expected);
             return false;
         }
@@ -308,23 +328,110 @@ void* make_qpc_thunk() {
     return code;
 }
 
-void* alloc_near(uint8_t* site) {
+// Pages for caves and constants must be within rel32 reach (+-2 GB) of the code that uses them. Each one
+// needs only 4 KB, but VirtualAlloc hands out 64 KB granules, and next to the game image those can run out:
+// with R.E.A.L. VR loaded, all but one or two granules above the image were taken and nearly every patch
+// failed with ERROR_INVALID_ADDRESS (487). So 64 KB blocks are taken, searched for above AND below the image,
+// and split into 4 KB pages (each can get its own protection). The first page of a block is never handed
+// out: a caller's VirtualFree(page, 0, MEM_RELEASE) on a failure path then fails harmlessly instead of
+// releasing pages other patches are using.
+constexpr uintptr_t kPoolBlock = 0x10000;
+constexpr uintptr_t kPoolPage = 0x1000;
+constexpr intptr_t kNearReach = 0x70000000;
+uint8_t* g_pool_block = nullptr;
+uintptr_t g_pool_next = 0;
+std::atomic<int> g_pool_lock{0};
+std::atomic<int> g_pool_blocks{0};
+
+bool near_enough(uintptr_t a, const uint8_t* site) {
+    const intptr_t d = static_cast<intptr_t>(a) - reinterpret_cast<intptr_t>(site);
+    return d > -kNearReach && d < kNearReach;
+}
+
+// One 64 KB block within reach of `site`: free regions found with VirtualQuery, upward from the end of the
+// image, then downward from its base.
+uint8_t* alloc_block_near(uint8_t* site) {
     SYSTEM_INFO info{};
     GetSystemInfo(&info);
-    const uintptr_t gran = info.dwAllocationGranularity;
+    const uintptr_t gran = info.dwAllocationGranularity ? info.dwAllocationGranularity : 0x10000;
     const auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(g_image);
     const auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(g_image + dos->e_lfanew);
-    uintptr_t cursor = (reinterpret_cast<uintptr_t>(g_image) + nt->OptionalHeader.SizeOfImage + gran - 1) &
-                       ~(gran - 1);
-    const uintptr_t limit = reinterpret_cast<uintptr_t>(site) + 0x70000000ull;
-    for (; cursor < limit; cursor += gran) {
-        void* page = VirtualAlloc(reinterpret_cast<void*>(cursor), 0x1000, MEM_RESERVE | MEM_COMMIT,
-                                  PAGE_READWRITE);
-        if (page) {
-            return page;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(g_image);
+    const uintptr_t image_end = base + nt->OptionalHeader.SizeOfImage;
+    const uintptr_t s = reinterpret_cast<uintptr_t>(site);
+    const uintptr_t up_limit = s + kNearReach - kPoolBlock;
+    const uintptr_t down_limit = s > static_cast<uintptr_t>(kNearReach) ? s - kNearReach : gran;
+    auto try_at = [](uintptr_t a) -> uint8_t* {
+        return static_cast<uint8_t*>(
+            VirtualAlloc(reinterpret_cast<void*>(a), kPoolBlock, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    };
+    // Upward.
+    for (uintptr_t cursor = (image_end + gran - 1) & ~(gran - 1); cursor < up_limit;) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<void*>(cursor), &mbi, sizeof(mbi))) {
+            break;
         }
+        const uintptr_t region = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        const uintptr_t region_end = region + mbi.RegionSize;
+        if (mbi.State == MEM_FREE) {
+            const uintptr_t a = (cursor + gran - 1) & ~(gran - 1);
+            if (a + kPoolBlock <= region_end && a < up_limit) {
+                if (uint8_t* p = try_at(a)) {
+                    return p;
+                }
+            }
+        }
+        cursor = region_end > cursor ? region_end : cursor + gran;
+    }
+    // Downward.
+    for (uintptr_t cursor = (base - 1) & ~(gran - 1); cursor > down_limit;) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<void*>(cursor), &mbi, sizeof(mbi))) {
+            break;
+        }
+        const uintptr_t region = reinterpret_cast<uintptr_t>(mbi.AllocationBase ? mbi.AllocationBase : mbi.BaseAddress);
+        const uintptr_t region_start = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        const uintptr_t region_end = region_start + mbi.RegionSize;
+        if (mbi.State == MEM_FREE) {
+            uintptr_t a = (region_end - kPoolBlock) & ~(gran - 1);
+            if (a > cursor) {
+                a = cursor & ~(gran - 1);
+            }
+            if (a >= region_start && a > down_limit) {
+                if (uint8_t* p = try_at(a)) {
+                    return p;
+                }
+            }
+        }
+        const uintptr_t next = (mbi.State == MEM_FREE ? region_start : region);
+        if (next == 0 || next <= gran) {
+            break;
+        }
+        const uintptr_t stepped = (next - 1) & ~(gran - 1);
+        cursor = stepped < cursor ? stepped : cursor - gran;
     }
     return nullptr;
+}
+
+void* alloc_near(uint8_t* site) {
+    spin_lock(g_pool_lock);
+    void* page = nullptr;
+    if (g_pool_block && g_pool_next + kPoolPage <= reinterpret_cast<uintptr_t>(g_pool_block) + kPoolBlock &&
+        near_enough(g_pool_next, site)) {
+        page = reinterpret_cast<void*>(g_pool_next);
+        g_pool_next += kPoolPage;
+    } else if (uint8_t* block = alloc_block_near(site)) {
+        g_pool_block = block;
+        g_pool_next = reinterpret_cast<uintptr_t>(block) + 2 * kPoolPage;
+        page = block + kPoolPage;
+        const int blocks = g_pool_blocks.fetch_add(1) + 1;
+        LOG_INFO("Cave block %d at %p (%s the game image)", blocks, block,
+                 block > g_image ? "above" : "below");
+    } else {
+        SetLastError(ERROR_INVALID_ADDRESS);
+    }
+    spin_unlock(g_pool_lock);
+    return page;
 }
 
 // Constants the game reads every frame, recomputed from the frame time by apply_frame_step().
@@ -495,13 +602,39 @@ bool patch_havok() {
     }
     const float scale = current_step() * 60.0f;
     *cell = scale;
-    uint8_t code[13] = {
-        0xF3, 0x0F, 0x59, 0x0D, 0x00, 0x00, 0x00, 0x00,  // mulss xmm1, [rip+disp] (the scale cell)
-        0xE9, 0x00, 0x00, 0x00, 0x00,                    // jmp stub
-    };
-    const intptr_t cell_disp = reinterpret_cast<uint8_t*>(cell) - (static_cast<uint8_t*>(g_havok_relay) + 8);
-    const intptr_t jump = target - (static_cast<uint8_t*>(g_havok_relay) + 13);
-    if (jump < INT32_MIN || jump > INT32_MAX || cell_disp < INT32_MIN || cell_disp > INT32_MAX) {
+    // External mode: only a step that is still the retail 1/60 is scaled (cell[1] holds 1/60).
+    //   ucomiss xmm1, [rip+d] (1/60) ; jne +8 ; mulss xmm1, [rip+d] (scale) ; jmp stub
+    const bool external = g_external_unlock.load(std::memory_order_relaxed) != 0;
+    cell[1] = 1.0f / 60.0f;
+    uint8_t code[22] = {};
+    size_t code_size = 13;
+    intptr_t cell_disp = 0;
+    intptr_t jump = 0;
+    intptr_t retail_disp = 0;
+    auto* relay = static_cast<uint8_t*>(g_havok_relay);
+    if (!external) {
+        const uint8_t plain[13] = {
+            0xF3, 0x0F, 0x59, 0x0D, 0x00, 0x00, 0x00, 0x00,  // mulss xmm1, [rip+disp] (the scale cell)
+            0xE9, 0x00, 0x00, 0x00, 0x00,                    // jmp stub
+        };
+        std::memcpy(code, plain, sizeof(plain));
+        cell_disp = reinterpret_cast<uint8_t*>(cell) - (relay + 8);
+        jump = target - (relay + 13);
+    } else {
+        const uint8_t guarded[22] = {
+            0x0F, 0x2E, 0x0D, 0x00, 0x00, 0x00, 0x00,        // ucomiss xmm1, [rip+disp] (1/60)
+            0x75, 0x08,                                      // jne over the multiply
+            0xF3, 0x0F, 0x59, 0x0D, 0x00, 0x00, 0x00, 0x00,  // mulss xmm1, [rip+disp] (the scale cell)
+            0xE9, 0x00, 0x00, 0x00, 0x00,                    // jmp stub
+        };
+        std::memcpy(code, guarded, sizeof(guarded));
+        code_size = sizeof(guarded);
+        retail_disp = reinterpret_cast<uint8_t*>(cell + 1) - (relay + 7);
+        cell_disp = reinterpret_cast<uint8_t*>(cell) - (relay + 17);
+        jump = target - (relay + 22);
+    }
+    if (jump < INT32_MIN || jump > INT32_MAX || cell_disp < INT32_MIN || cell_disp > INT32_MAX ||
+        retail_disp < INT32_MIN || retail_disp > INT32_MAX) {
         VirtualFree(cell, 0, MEM_RELEASE);
         VirtualFree(g_havok_relay, 0, MEM_RELEASE);
         g_havok_relay = nullptr;
@@ -510,16 +643,23 @@ bool patch_havok() {
     }
     const auto cell_rel = static_cast<int32_t>(cell_disp);
     const auto rel = static_cast<int32_t>(jump);
-    std::memcpy(code + 4, &cell_rel, sizeof(cell_rel));
-    std::memcpy(code + 9, &rel, sizeof(rel));
-    std::memcpy(g_havok_relay, code, sizeof(code));
+    if (!external) {
+        std::memcpy(code + 4, &cell_rel, sizeof(cell_rel));
+        std::memcpy(code + 9, &rel, sizeof(rel));
+    } else {
+        const auto retail_rel = static_cast<int32_t>(retail_disp);
+        std::memcpy(code + 3, &retail_rel, sizeof(retail_rel));
+        std::memcpy(code + 13, &cell_rel, sizeof(cell_rel));
+        std::memcpy(code + 18, &rel, sizeof(rel));
+    }
+    std::memcpy(g_havok_relay, code, code_size);
     DWORD protect = 0;
     if (!VirtualProtect(g_havok_relay, 0x1000, PAGE_EXECUTE_READ, &protect)) {
         VirtualFree(g_havok_relay, 0, MEM_RELEASE);
         g_havok_relay = nullptr;
         return false;
     }
-    FlushInstructionCache(GetCurrentProcess(), g_havok_relay, sizeof(code));
+    FlushInstructionCache(GetCurrentProcess(), g_havok_relay, code_size);
 
     const intptr_t disp = static_cast<uint8_t*>(g_havok_relay) - (site + 5);
     if (disp < INT32_MIN || disp > INT32_MAX) {
@@ -1178,11 +1318,65 @@ void update_speed_factors() {
         return;
     }
     bool measured = false;
-    const float dt = sample_frame_dt(&measured);
+    float dt = sample_frame_dt(&measured);
+    if (g_external_unlock.load(std::memory_order_relaxed) != 0) {
+        // The step the game really integrated this frame with (the other mod's, or the measured one).
+        dt = current_step();
+        measured = true;
+    }
     write_speed_factors(dt);
     if (measured && g_speed_logged.exchange(1) == 0) {
         LOG_INFO("Sprint graze using frame time %.3f ms, scale %.3f, decay %.4f, recover %.4f", dt * 1000.0f,
                  g_speed_cave[0], g_speed_cave[1], g_speed_cave[2]);
+    }
+}
+
+bool g_speed_installed = false;
+
+float safe_float(const uint8_t* p) {
+    __try {
+        return *reinterpret_cast<const volatile float*>(p);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1.0f;
+    }
+}
+
+// Integrity watchdog for the sprint graze patch (run from the simulation thread every ~2 s): the three
+// multiplies must still read the cave. If something (the game's own code protection, another mod) has
+// put the original operands back, that is logged with the bytes found and the patch is applied again.
+// Once a minute it also logs that the patch is in place, with the values it currently holds.
+void verify_speed_patch() {
+    if (!g_speed_installed || !g_speed_cave) {
+        return;
+    }
+    static int repairs = 0;
+    static uint64_t checks = 0;
+    ++checks;
+    const uint32_t sites[3] = {kSpeedMul, kSpeedDecay, kSpeedRecover};
+    for (int k = 0; k < 3; ++k) {
+        uint8_t* insn = image_rva(sites[k]);
+        int32_t disp = 0;
+        std::memcpy(&disp, insn + 4, 4);
+        const uint8_t* target = insn + 8 + disp;
+        if (target == reinterpret_cast<const uint8_t*>(g_speed_cave + k)) {
+            continue;
+        }
+        if (repairs < 20) {
+            LOG_ERROR("Sprint graze patch at 0x%08X was undone (bytes %02X %02X %02X %02X, operand %p = %.4f, "
+                      "check #%llu); applying it again",
+                      sites[k], insn[0], insn[1], insn[2], insn[3], target,
+                      safe_float(target),
+                      static_cast<unsigned long long>(checks));
+        }
+        ++repairs;
+        if (insn[0] == 0xF3 && insn[1] == 0x0F && insn[2] == 0x59) {
+            write_disp32(insn + 4, insn + 8, g_speed_cave + k);
+        }
+    }
+    if (checks % 30 == 1) {
+        LOG_INFO("Sprint graze check #%llu: patch in place (repairs so far %d), threshold %.2f, decay %.4f, "
+                 "recover %.4f per frame", static_cast<unsigned long long>(checks), repairs, g_speed_cave[0],
+                 g_speed_cave[1], g_speed_cave[2]);
     }
 }
 
@@ -1209,6 +1403,7 @@ bool patch_speed() {
         LOG_ERROR("Could not retarget the sprint graze multiplies");
         return false;
     }
+    g_speed_installed = true;
     LOG_INFO("Sprint graze check retargeted (vanilla multiplier 60, decay 0.8, recover 1.2, per 1/%d s)",
              g_graze_ptde.load(std::memory_order_relaxed) != 0 ? 30 : 60);
     return true;
@@ -2132,16 +2327,246 @@ bool copy_camera_trace(const uint8_t* cam, float step, CameraTrace* out) {
     }
 }
 
+// ---- CameraProbe (diagnostic) ------------------------------------------------------------------------
+// Snapshots the first 0x400 bytes of the follow camera after every update. On a lock-on press (R3 on any
+// XInput pad, Q, or the middle mouse button) it dumps the camera once and then, for about 1.2 s, logs every
+// 32-bit field that changes, leaving out fields that were already changing in most updates before the
+// press (positions and the like) except every 16th update. At the end of the window it lists the fields
+// that were quiet before the press and changed after it: the lock-on / recenter state is among those.
+// Fields that flip between zero and non-zero are also logged outside the windows (a press the input
+// polling cannot see, e.g. one injected by another mod).
+constexpr size_t kProbeBytes = 0x400;
+constexpr size_t kProbeWords = kProbeBytes / 4;
+using XInputGetStateFn = DWORD(WINAPI*)(DWORD, void*);
+struct CamProbe {
+    void* cam = nullptr;
+    uint32_t prev[kProbeWords] = {};
+    bool have = false;
+    uint16_t busy[kProbeWords] = {};    // updates (of the last 256) in which the word changed
+    uint8_t history[256][kProbeWords / 8] = {};  // change bits per update, ring buffer
+    unsigned ring = 0;
+    int window = 0;
+    int window_index = 0;
+    uint64_t press_qpc = 0;
+    bool quiet_before[kProbeWords] = {};
+    uint16_t changed_after[kProbeWords] = {};
+    bool prev_button = false;
+    int presses = 0;
+    int idle_lines = 0;
+};
+CamProbe g_probes[2];
+int g_probe_switch_lines = 0;
+
+bool probe_copy(const void* cam, uint32_t* out) {
+    __try {
+        std::memcpy(out, cam, kProbeBytes);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool probe_button() {
+    static XInputGetStateFn xinput = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        for (const wchar_t* name : {L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll"}) {
+            HMODULE m = LoadLibraryW(name);
+            if (m) {
+                xinput = reinterpret_cast<XInputGetStateFn>(GetProcAddress(m, "XInputGetState"));
+                if (xinput) {
+                    LOG_INFO("[cam] probe reads the pad through %ls", name);
+                    break;
+                }
+            }
+        }
+    }
+    bool down = (GetAsyncKeyState('Q') & 0x8000) != 0 || (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+    if (xinput) {
+        for (DWORD i = 0; i < 4 && !down; ++i) {
+            uint8_t state[16] = {};  // XINPUT_STATE: packet number, then wButtons
+            if (xinput(i, state) == ERROR_SUCCESS) {
+                uint16_t buttons = 0;
+                std::memcpy(&buttons, state + 4, 2);
+                down = (buttons & 0x0080) != 0;  // XINPUT_GAMEPAD_RIGHT_THUMB
+            }
+        }
+    }
+    return down;
+}
+
+float word_float(uint32_t w) {
+    float f = 0.0f;
+    std::memcpy(&f, &w, 4);
+    return f;
+}
+
+void probe_log_changes(const char* tag, const uint32_t* prev, const uint32_t* cur, bool include_busy, const bool* quiet) {
+    char line[900];
+    int len = std::snprintf(line, sizeof(line), "[cam] %s yaw %.4f pitch %.4f lock %u:", tag, word_float(cur[0x140 / 4]),
+                            word_float(cur[0x144 / 4]), static_cast<unsigned>(reinterpret_cast<const uint8_t*>(cur)[0x260]));
+    int items = 0;
+    for (size_t i = 0; i < kProbeWords; ++i) {
+        if (prev[i] == cur[i]) {
+            continue;
+        }
+        if (!include_busy && !quiet[i]) {
+            continue;
+        }
+        const float f = word_float(cur[i]);
+        const bool plausible = std::fabs(f) < 1.0e7f && (std::fabs(f) > 1.0e-6f || cur[i] == 0);
+        int n;
+        if (plausible) {
+            n = std::snprintf(line + len, sizeof(line) - len, " +%03zX=%g", i * 4, f);
+        } else {
+            n = std::snprintf(line + len, sizeof(line) - len, " +%03zX=%08X", i * 4, cur[i]);
+        }
+        if (n < 0 || len + n >= static_cast<int>(sizeof(line)) - 40) {
+            LOG_INFO("%s ...", line);
+            len = std::snprintf(line, sizeof(line), "[cam] %s (cont.):", tag);
+            n = std::snprintf(line + len, sizeof(line) - len, " +%03zX=%08X", i * 4, cur[i]);
+        }
+        len += n;
+        ++items;
+    }
+    if (items > 0) {
+        LOG_INFO("%s", line);
+    }
+}
+
+void cam_probe(void* cam) {
+    if (!cam) {
+        return;
+    }
+    uint32_t cur[kProbeWords];
+    if (!probe_copy(cam, cur)) {
+        return;
+    }
+    int slot = -1;
+    for (int i = 0; i < 2; ++i) {
+        if (g_probes[i].cam == cam) {
+            slot = i;
+        }
+    }
+    if (slot < 0) {
+        slot = !g_probes[0].cam ? 0 : (!g_probes[1].cam ? 1 : 1);
+        g_probes[slot] = CamProbe();
+        g_probes[slot].cam = cam;
+        if (g_probe_switch_lines++ < 20) {
+            LOG_INFO("[cam] probe slot %d follows camera %p", slot, cam);
+        }
+    }
+    CamProbe& p = g_probes[slot];
+    const bool button = probe_button();
+    const bool press = button && !p.prev_button;
+    p.prev_button = button;
+    if (p.have) {
+        // Change history for the "busy" filter.
+        uint8_t* bits = p.history[p.ring];
+        for (size_t i = 0; i < kProbeWords; ++i) {
+            const bool old_bit = (bits[i / 8] >> (i % 8)) & 1;
+            const bool changed = p.prev[i] != cur[i];
+            if (old_bit) {
+                --p.busy[i];
+            }
+            if (changed) {
+                ++p.busy[i];
+                bits[i / 8] |= static_cast<uint8_t>(1u << (i % 8));
+            } else {
+                bits[i / 8] &= static_cast<uint8_t>(~(1u << (i % 8)));
+            }
+        }
+        p.ring = (p.ring + 1) & 255;
+    }
+    if (press && p.presses < 12) {
+        ++p.presses;
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        p.press_qpc = static_cast<uint64_t>(now.QuadPart);
+        p.window = 260;
+        p.window_index = 0;
+        for (size_t i = 0; i < kProbeWords; ++i) {
+            p.quiet_before[i] = p.busy[i] < 64;
+            p.changed_after[i] = 0;
+        }
+        LOG_INFO("[cam] ===== c%d lock-on press %d: camera %p, yaw %.4f pitch %.4f lock %u =====", slot, p.presses, cam,
+                 word_float(cur[0x140 / 4]), word_float(cur[0x144 / 4]),
+                 static_cast<unsigned>(reinterpret_cast<const uint8_t*>(cur)[0x260]));
+        for (size_t row = 0; row < kProbeWords; row += 8) {
+            LOG_INFO("[cam] c%d dump +%03zX: %08X %08X %08X %08X %08X %08X %08X %08X", slot, row * 4, cur[row], cur[row + 1],
+                     cur[row + 2], cur[row + 3], cur[row + 4], cur[row + 5], cur[row + 6], cur[row + 7]);
+        }
+    }
+    if (p.have && p.window > 0) {
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        LARGE_INTEGER freq{};
+        QueryPerformanceFrequency(&freq);
+        const double ms = static_cast<double>(static_cast<uint64_t>(now.QuadPart) - p.press_qpc) * 1000.0 /
+                          static_cast<double>(freq.QuadPart);
+        char tag[48];
+        std::snprintf(tag, sizeof(tag), "c%d +%4.0f ms #%d", slot, ms, p.window_index);
+        for (size_t i = 0; i < kProbeWords; ++i) {
+            if (p.prev[i] != cur[i] && p.changed_after[i] < 60000) {
+                ++p.changed_after[i];
+            }
+        }
+        probe_log_changes(tag, p.prev, cur, (p.window_index % 16) == 0, p.quiet_before);
+        ++p.window_index;
+        if (--p.window == 0) {
+            char line[900];
+            int len = std::snprintf(line, sizeof(line), "[cam] c%d press %d summary, quiet before and changed after (field:updates):",
+                                    slot, p.presses);
+            for (size_t i = 0; i < kProbeWords; ++i) {
+                if (p.quiet_before[i] && p.changed_after[i] > 0 && len < static_cast<int>(sizeof(line)) - 24) {
+                    len += std::snprintf(line + len, sizeof(line) - len, " +%03zX:%u", i * 4, p.changed_after[i]);
+                }
+            }
+            LOG_INFO("%s", line);
+        }
+    } else if (p.have && p.idle_lines < 400) {
+        // Outside a window: fields that switch between zero and non-zero (flags, timers starting).
+        char line[600];
+        int len = 0;
+        int items = 0;
+        for (size_t i = 0; i < kProbeWords; ++i) {
+            if ((p.prev[i] == 0) != (cur[i] == 0) && p.busy[i] < 8) {
+                if (items == 0) {
+                    len = std::snprintf(line, sizeof(line), "[cam] c%d flag yaw %.4f lock %u:", slot, word_float(cur[0x140 / 4]),
+                                        static_cast<unsigned>(reinterpret_cast<const uint8_t*>(cur)[0x260]));
+                }
+                if (len < static_cast<int>(sizeof(line)) - 32) {
+                    len += std::snprintf(line + len, sizeof(line) - len, " +%03zX %08X->%08X", i * 4, p.prev[i], cur[i]);
+                }
+                ++items;
+            }
+        }
+        if (items > 0) {
+            ++p.idle_lines;
+            LOG_INFO("%s", line);
+        }
+    }
+    std::memcpy(p.prev, cur, kProbeBytes);
+    p.have = true;
+}
+
 void hook_follow(void* camera, float step, void* chr, void* extra) {
-    if (g_cam_gain_n && g_cam_dist_k) {
+    const bool fix = g_fix_camera.load(std::memory_order_relaxed) != 0;
+    if (fix && g_cam_gain_n && g_cam_dist_k) {
         const double rate = g_camera_ptde_speed.load(std::memory_order_relaxed) != 0 ? 30.0 : 60.0;
         double n = static_cast<double>(step) * rate;
         n = n < 0.02 ? 0.02 : (n > 10.0 ? 10.0 : n);
         *g_cam_gain_n = static_cast<float>(n);
         *g_cam_dist_k = static_cast<float>(1.0 - std::pow(0.9, n));
     }
-    scale_follow_camera(camera, step);
+    if (fix) {
+        scale_follow_camera(camera, step);
+    }
     g_follow(camera, step, chr, extra);
+    if (g_cam_probe.load(std::memory_order_relaxed) != 0) {
+        cam_probe(camera);
+    }
     if (trace_active() && camera) {
         g_cam_trace.chr = chr;
         g_cam_trace_valid.store(copy_camera_trace(static_cast<const uint8_t*>(camera), step, &g_cam_trace) ? 1 : 0,
@@ -2150,7 +2575,7 @@ void hook_follow(void* camera, float step, void* chr, void* extra) {
 }
 
 bool patch_camera() {
-    if (g_fix_camera.load(std::memory_order_relaxed) == 0) {
+    if (g_fix_camera.load(std::memory_order_relaxed) == 0 && g_cam_probe.load(std::memory_order_relaxed) == 0) {
         LOG_INFO("Lock-on camera fix disabled by FixCamera=false");
         return true;
     }
@@ -2188,7 +2613,8 @@ bool patch_camera() {
             return false;
         }
     }
-    LOG_INFO("Lock-on camera smoothing follows the frame time (2 call sites)");
+    LOG_INFO("Follow camera update hooked (2 call sites): FixCamera %s, CameraProbe %s",
+             g_fix_camera.load() ? "on" : "off", g_cam_probe.load() ? "on" : "off");
     return true;
 }
 
@@ -2241,6 +2667,35 @@ bool write_code(uint8_t* site, const uint8_t* bytes, size_t size) {
     FlushInstructionCache(GetCurrentProcess(), site, size);
     DWORD ignored = 0;
     VirtualProtect(site, size, old, &ignored);
+    return true;
+}
+
+// Lock-on with nothing to lock onto. The player's lock-on handler (fn 0x40B0F0) asks the camera manager
+// ([player+0x1438]) for a lock-on when it finds a target (0x40BCD8: [mgr+0xA0] = 1, target in [mgr+0x90]) and
+// otherwise for a recenter (0x40BD1C: [mgr+0xA2] = 1). The manager (fn 0x234905, 0x234BA7) passes that on as
+// [followcam+0x262], and ChrFollowCam::Update (0x237EB5) then starts a 0.3 s turn behind the character
+// ([+0x263] flag, [+0x264] timer, [+0x270] target yaw). NoLockOnRecenter stores 0 instead of 1 at 0x40BD1C, so
+// the recenter is never requested; the lock-on request and every other user of the manager's recenter are
+// unchanged.
+constexpr uint32_t kRecenterRequestRva = 0x40BD15;
+std::atomic<int> g_no_recenter_state{0};
+bool patch_no_recenter() {
+    static const uint8_t kExpect[14] = {
+        0x80, 0x7C, 0x24, 0x30, 0x00,              // cmp byte ptr [rsp+30h], 0
+        0x74, 0x07,                                // je +7
+        0xC6, 0x80, 0xA2, 0x00, 0x00, 0x00, 0x01,  // mov byte ptr [rax+0A2h], 1
+    };
+    uint8_t* site = image_rva(kRecenterRequestRva);
+    if (std::memcmp(site, kExpect, sizeof(kExpect)) != 0) {
+        LOG_ERROR("Lock-on recenter request at 0x%08X does not match this build", kRecenterRequestRva);
+        return false;
+    }
+    const uint8_t zero = 0x00;
+    if (!write_code(site + 13, &zero, 1)) {
+        LOG_ERROR("Could not patch the lock-on recenter request (Win32=%lu)", GetLastError());
+        return false;
+    }
+    LOG_INFO("Lock-on with no target no longer recenters the camera (0x%08X)", kRecenterRequestRva + 7);
     return true;
 }
 
@@ -3641,7 +4096,10 @@ void try_delayed_patches() {
     }
     int expected = 0;
     if (g_havok_state.compare_exchange_strong(expected, 1)) {
-        const bool ok = patch_havok();
+        const bool skip = g_fix_havok.load(std::memory_order_relaxed) == 0 ||
+                          (g_external_unlock.load(std::memory_order_relaxed) != 0 &&
+                           g_replace_retail.load(std::memory_order_relaxed) == 0);
+        const bool ok = skip || patch_havok();
         g_havok_state.store(ok ? 2 : -1);
     }
     expected = 0;
@@ -3725,6 +4183,11 @@ void try_delayed_patches() {
     if (g_swirl_state.compare_exchange_strong(expected, 1)) {
         const bool ok = true;  // the swirl counters are handled in hook_loading
         g_swirl_state.store(ok ? 2 : -1);
+    }
+    expected = 0;
+    if (g_no_recenter_state.compare_exchange_strong(expected, 1)) {
+        const bool ok = g_no_recenter.load(std::memory_order_relaxed) == 0 || patch_no_recenter();
+        g_no_recenter_state.store(ok ? 2 : -1);
     }
     expected = 0;
     if (g_camera_state.compare_exchange_strong(expected, 1)) {
@@ -3849,9 +4312,70 @@ void note_presses(void* detector, void* input_state, void* resolved, size_t stri
 
 void try_install_hold_state();
 
+bool try_hook_remo();
+
+void hook_sim_external(void* step, float frame_time) {
+    g_sim_count.fetch_add(1, std::memory_order_relaxed);
+    // The wall-clock time since the previous simulation step (also stored in g_frame_dt).
+    const float measured = advance_frame_dt();
+    const bool retail = is_retail_step(frame_time);
+    float used = measured;
+    if (!retail && frame_time > 0.0f && frame_time < 1.0f) {
+        // The other mod's step: the physics really integrate with it, so the fixes follow it.
+        used = frame_time < kMinStep ? kMinStep : (frame_time > kMaxStep ? kMaxStep : frame_time);
+    }
+    g_frame_dt.store(used, std::memory_order_relaxed);
+    (retail ? g_ext_retail_steps : g_ext_passed_steps).fetch_add(1, std::memory_order_relaxed);
+    g_ext_last_incoming.store(frame_time, std::memory_order_relaxed);
+    g_ext_last_measured.store(measured, std::memory_order_relaxed);
+    static int last_source = -1;
+    static int source_lines = 0;
+    static uint64_t frames = 0;
+    ++frames;
+    const int source = retail ? 1 : 0;
+    if ((source != last_source && source_lines < 20) || frames == 120 || frames == 1200) {
+        if (source != last_source) {
+            ++source_lines;
+        }
+        last_source = source;
+        LOG_INFO("Simulation step #%llu: incoming %.3f ms, measured %.3f ms, used %.3f ms (%s)",
+                 static_cast<unsigned long long>(frames), frame_time * 1000.0f, measured * 1000.0f, used * 1000.0f,
+                 !retail ? "set by the other mod, passed through"
+                 : (g_replace_retail.load(std::memory_order_relaxed) != 0 ? "retail 1/60, replaced by the measured time"
+                                                                          : "retail 1/60, passed through (ReplaceRetailSteps=false)"));
+    }
+    apply_frame_step(used);
+    write_gauge_factors(used);
+    write_slide_steer(used);
+    if (g_fix_hold.load(std::memory_order_relaxed) != 0) {
+        try_install_hold_state();
+    }
+    try_delayed_patches();
+    update_speed_factors();
+    if (!g_remo && (frames & 63) == 0) {
+        try_hook_remo();
+    }
+    {
+        // About every 2 s of game time.
+        static float since = 0.0f;
+        since += used;
+        if (since >= 2.0f) {
+            since = 0.0f;
+            verify_speed_patch();
+        }
+    }
+    sample_script_memory();
+    const bool replace = retail && g_replace_retail.load(std::memory_order_relaxed) != 0;
+    g_sim(step, replace ? used : frame_time);
+}
+
 void hook_sim(void* step, float frame_time) {
     if (g_scheduler_active.load(std::memory_order_acquire) == 0) {
         g_sim(step, frame_time);
+        return;
+    }
+    if (g_external_unlock.load(std::memory_order_relaxed) != 0) {
+        hook_sim_external(step, frame_time);
         return;
     }
     g_sim_count.fetch_add(1, std::memory_order_relaxed);
@@ -4281,7 +4805,7 @@ bool try_hook_remo() {
 }
 
 void rollback() {
-    if (g_qpc_iat && g_qpc) {
+    if (g_qpc_iat && g_qpc && g_external_unlock.load(std::memory_order_relaxed) == 0) {
         patch_pointer(g_qpc_iat, reinterpret_cast<void*>(g_qpc));
     }
     if (g_sim_slot && g_sim) {
@@ -4386,7 +4910,17 @@ void describe_flipper(char* out, unsigned size) {
 
 void describe_heartbeat(char* out, unsigned size) {
     char flipper[192];
-    describe_flipper(flipper, sizeof(flipper));
+    if (g_external_unlock.load(std::memory_order_relaxed) != 0) {
+        std::snprintf(flipper, sizeof(flipper),
+                      "external unlock: steps from the other mod %llu, retail 1/60 replaced %llu, last incoming %.3f ms "
+                      "measured %.3f ms, menu queries suppressed %llu",
+                      static_cast<unsigned long long>(g_ext_passed_steps.exchange(0)),
+                      static_cast<unsigned long long>(g_ext_retail_steps.exchange(0)),
+                      g_ext_last_incoming.load() * 1000.0f, g_ext_last_measured.load() * 1000.0f,
+                      static_cast<unsigned long long>(g_menu_suppressed.load(std::memory_order_relaxed)));
+    } else {
+        describe_flipper(flipper, sizeof(flipper));
+    }
     char ai[48];
     char other[48];
     take_script_memory(g_ai_script_memory, ai, sizeof(ai));
@@ -4497,6 +5031,56 @@ bool camera_trace(CameraTrace* out) {
     return true;
 }
 
+// ExternalFrameUnlock: the other mod (R.E.A.L. VR) owns the frame pacer and the flipper. Only the step
+// hooks go in, chained onto whatever is in the slots now (the other mod may have hooked them meanwhile).
+bool patches_apply_external() {
+    struct Hook {
+        const char* name;
+        void** slot;
+        void** original;
+        void* hook;
+    };
+    const Hook hooks[] = {
+        {"simulation", g_sim_slot, reinterpret_cast<void**>(&g_sim), reinterpret_cast<void*>(hook_sim)},
+        {"fx", g_fx_slot, reinterpret_cast<void**>(&g_fx), reinterpret_cast<void*>(hook_fx)},
+        {"press", g_press_slot, reinterpret_cast<void**>(&g_press), reinterpret_cast<void*>(hook_press)},
+        {"press-alt", g_press_alt_slot, reinterpret_cast<void**>(&g_press_alt), reinterpret_cast<void*>(hook_press_alt)},
+        {"repeat", g_repeat_slot, reinterpret_cast<void**>(&g_repeat), reinterpret_cast<void*>(hook_repeat)},
+        {"repeat-alt", g_repeat_alt_slot, reinterpret_cast<void**>(&g_repeat_alt), reinterpret_cast<void*>(hook_repeat_alt)},
+        {"common-menu", g_common_menu_slot, reinterpret_cast<void**>(&g_common_menu), reinterpret_cast<void*>(hook_common_menu)},
+        {"ingame-menu", g_ingame_menu_slot, reinterpret_cast<void**>(&g_ingame_menu), reinterpret_cast<void*>(hook_ingame_menu)},
+        {"title-menu", g_title_menu_slot, reinterpret_cast<void**>(&g_title_menu), reinterpret_cast<void*>(hook_title_menu)},
+    };
+    for (const Hook& h : hooks) {
+        void* value = *h.slot;
+        if (!value || !executable(value)) {
+            LOG_ERROR("%s slot holds %p, which is not code; nothing was installed", h.name, value);
+            return false;
+        }
+        *h.original = value;
+    }
+    for (const Hook& h : hooks) {
+        if (!patch_pointer(h.slot, h.hook)) {
+            LOG_ERROR("Could not install the %s hook (Win32=%lu)", h.name, GetLastError());
+            rollback();
+            return false;
+        }
+    }
+    try_hook_remo();
+    g_scheduler_active.store(1, std::memory_order_release);
+    if (g_fix_ui.load(std::memory_order_relaxed) != 0) {
+        install_loading_hook();
+    }
+    diag_watchdog_start(
+        [] { return g_sim_count.load(std::memory_order_relaxed); },
+        [] { return g_frame_dt.load(std::memory_order_relaxed) * 1000.0f; },
+        describe_heartbeat, flipper_tick);
+    LOG_INFO("DS1 Remastered FPS Unlock v1.9.0-vr1 active in ExternalFrameUnlock mode: the frame rate is the other "
+             "mod's, retail 1/60 steps are replaced by the measured time, every other step is passed through and "
+             "the physics fixes follow it.");
+    return true;
+}
+
 bool patches_apply() {
     g_image = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
     auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(g_image);
@@ -4555,6 +5139,9 @@ bool patches_apply() {
     }
     Sleep(1500);  // let start-up settle before anything is modified
     g_install_ms = GetTickCount64();
+    if (g_external_unlock.load(std::memory_order_relaxed) != 0) {
+        return patches_apply_external();
+    }
     g_qpc_thunk = make_qpc_thunk();
     if (!g_qpc_thunk) {
         LOG_ERROR("Could not allocate the frame pacer thunk (Win32=%lu)", GetLastError());

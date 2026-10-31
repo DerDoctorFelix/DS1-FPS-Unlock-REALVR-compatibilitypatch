@@ -66,6 +66,27 @@ inline std::atomic<uint64_t> g_sim_count{0};
 // 1 = the menu input de-duplication is installed (MenuInputFilter).
 inline std::atomic<int> g_menu_filter{1};
 inline std::atomic<uint64_t> g_menu_suppressed{0};
+// External frame unlock (INI ExternalFrameUnlock, for R.E.A.L. VR and other mods that unlock the frame rate
+// themselves). The frame pacer and the flipper are left alone, and a step the game hands out is replaced only
+// when it is still the retail fixed 1/60: any other value has been set by the other mod and is passed through.
+// The per-frame physics fixes then follow the step the game really uses.
+inline std::atomic<int> g_external_unlock{0};
+// Mouse look scaled to the frame time (INI FixMouse) and the Havok cloth step (INI FixHavokStep).
+inline std::atomic<int> g_fix_mouse{1};
+inline std::atomic<int> g_fix_havok{1};
+// External mode: 1 = a step that is still the retail 1/60 is replaced by the measured time (INI
+// ReplaceRetailSteps); 0 = every step is passed through untouched and only the per-frame fixes follow the time.
+inline std::atomic<int> g_replace_retail{1};
+// Diagnostic: log the follow camera's fields around a lock-on press (INI CameraProbe).
+inline std::atomic<int> g_cam_probe{0};
+// The lock-on button with nothing to lock onto leaves the camera where it is (INI NoLockOnRecenter).
+inline std::atomic<int> g_no_recenter{0};
+// External mode statistics for the heartbeat: simulation steps that were the retail 1/60 (replaced by the
+// measured frame time) and steps that came from the other mod (passed through), and the last values seen.
+inline std::atomic<uint64_t> g_ext_retail_steps{0};
+inline std::atomic<uint64_t> g_ext_passed_steps{0};
+inline std::atomic<float> g_ext_last_incoming{0.0f};
+inline std::atomic<float> g_ext_last_measured{0.0f};
 inline uint8_t* g_image = nullptr;
 
 inline uint8_t* image_rva(uintptr_t rva) {

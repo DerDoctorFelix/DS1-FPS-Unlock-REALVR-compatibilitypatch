@@ -1,6 +1,8 @@
 #include "bonfire.h"
 #include "diag.h"
 #include "log.h"
+#include "offline.h"
+#include "skipintro.h"
 #include "patches.h"
 #include "settings.h"
 #include "state.h"
@@ -26,7 +28,7 @@ DWORD WINAPI worker(void*) {
     GetModuleFileNameW(g_self, dll_path, MAX_PATH);
     log_init(dll_path, L"DSR-FPS-Unlock.log");
     diag_install(dll_path, L"DSR-FPS-Unlock-crash.dmp");
-    LOG_INFO("DS1 Remastered FPS Unlock v1.9.0");
+    LOG_INFO("DS1 Remastered FPS Unlock v1.9.0-vr1 (R.E.A.L. VR compatibility fork)");
 
     wchar_t exe_path[MAX_PATH];
     GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
@@ -38,11 +40,20 @@ DWORD WINAPI worker(void*) {
     LOG_INFO("FPSUnlock: %s", settings.fps_unlock ? "true" : "false");
     LOG_INFO("MaxFPS: %d", settings.target_fps);
     LOG_INFO("BonfireFix: %s", settings.bonfire_unstick ? "true" : "false");
+    // BlockOnline is a safety switch, so it does not depend on FPSUnlock: it goes in first, before the game
+    // has any chance to reach its servers.
+    LOG_INFO("BlockOnline: %s", settings.block_online ? "true" : "false");
+    if (settings.block_online) {
+        offline_install();
+    }
     // FPSUnlock is the master switch: nothing below, diagnostics included, runs without it.
     if (!settings.fps_unlock) {
         LOG_INFO("FPSUnlock is false. The game is unchanged.");
         return 0;
     }
+    // Before anything waits for the window: the logos run within the first seconds.
+    LOG_INFO("SkipIntro: %s", settings.skip_intro ? "true" : "false");
+    skipintro_install(settings.skip_intro);
     if ((settings.trace || settings.watch) && !trace_start(dll_path)) {
         LOG_ERROR("Trace was requested but the CSV could not be opened");
     }
@@ -52,8 +63,22 @@ DWORD WINAPI worker(void*) {
     if (settings.watch && !watch_start(dll_path)) {
         LOG_ERROR("Watch was requested but could not start");
     }
+    g_external_unlock.store(settings.external_unlock ? 1 : 0, std::memory_order_relaxed);
+    g_fix_mouse.store(settings.fix_mouse ? 1 : 0, std::memory_order_relaxed);
+    g_fix_havok.store(settings.fix_havok ? 1 : 0, std::memory_order_relaxed);
+    g_replace_retail.store(settings.replace_retail ? 1 : 0, std::memory_order_relaxed);
+    g_cam_probe.store(settings.cam_probe ? 1 : 0, std::memory_order_relaxed);
+    g_no_recenter.store(settings.no_recenter ? 1 : 0, std::memory_order_relaxed);
+    LOG_INFO("CameraProbe: %s, NoLockOnRecenter: %s", settings.cam_probe ? "true" : "false",
+             settings.no_recenter ? "true" : "false");
+    if (settings.external_unlock) {
+        LOG_INFO("ReplaceRetailSteps: %s", settings.replace_retail ? "true" : "false");
+    }
+    LOG_INFO("ExternalFrameUnlock: %s, FixMouse: %s, FixHavokStep: %s", settings.external_unlock ? "true" : "false",
+             settings.fix_mouse ? "true" : "false", settings.fix_havok ? "true" : "false");
     g_target_fps.store(static_cast<uint32_t>(settings.target_fps), std::memory_order_relaxed);
-    g_variable_dt.store(settings.variable_frame_time ? 1 : 0, std::memory_order_relaxed);
+    // With an external unlock the step is always the measured one (or the other mod's).
+    g_variable_dt.store(settings.variable_frame_time || settings.external_unlock ? 1 : 0, std::memory_order_relaxed);
     g_frame_dt.store(1.0f / static_cast<float>(settings.target_fps), std::memory_order_relaxed);
     LOG_INFO("VariableFrameTime: %s", settings.variable_frame_time ? "true" : "false");
     g_menu_filter.store(settings.menu_input_filter ? 1 : 0, std::memory_order_relaxed);

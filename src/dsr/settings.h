@@ -100,6 +100,23 @@ struct Settings {
     // Script garbage collection at least every 30 (AI) / 60 frames, as at 60 FPS. Without it the AI
     // script heap can fill at a high frame rate in a crowded area and the game closes itself.
     bool fix_script_memory = true;
+    // Another mod (R.E.A.L. VR) unlocks the frame rate: leave the pacer and flipper alone and only replace
+    // steps that are still the retail 1/60 (INI ExternalFrameUnlock).
+    bool external_unlock = false;
+    // Mouse look follows the frame time (INI FixMouse).
+    bool fix_mouse = true;
+    // The Havok (cloth) step follows the frame time (INI FixHavokStep).
+    bool fix_havok = true;
+    // External mode: replace steps that are still the retail 1/60 (INI ReplaceRetailSteps).
+    bool replace_retail = true;
+    // Diagnostic: log what the lock-on button changes in the follow camera (INI CameraProbe).
+    bool cam_probe = false;
+    // Keep the game off FromSoftware's servers (INI BlockOnline). Works even with FPSUnlock = false.
+    bool block_online = true;
+    // Skip the start-up logos (INI SkipIntro).
+    bool skip_intro = true;
+    // The lock-on button with no target does not swing the camera behind the character (INI NoLockOnRecenter).
+    bool no_recenter = false;
     // Hardware write-watch on character height (implies trace). Diagnostic only.
     bool watch = false;
 };

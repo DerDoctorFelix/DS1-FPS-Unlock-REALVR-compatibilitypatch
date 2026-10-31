@@ -200,7 +200,7 @@ HRESULT WINAPI hook_get_device_state(void* device, DWORD size, void* state) {
     }
     const HRESULT result = original(device, size, state);
     if (SUCCEEDED(result) && state && mouse && (size == 16 || size == 20) &&
-        g_scheduler_active.load(std::memory_order_acquire) != 0) {
+        g_scheduler_active.load(std::memory_order_acquire) != 0 && g_fix_mouse.load(std::memory_order_relaxed) != 0) {
         auto* axes = static_cast<LONG*>(state);
         const double step = poll_step(&mouse->last_state_qpc, &mouse->last_state_step);
         note_mouse_poll(axes[0], axes[1], step);
@@ -231,7 +231,7 @@ HRESULT WINAPI hook_get_device_data(void* device, DWORD object_size, void* objec
     }
     const HRESULT result = original(device, object_size, objects, count, flags);
     if (SUCCEEDED(result) && objects && count && object_size >= 8 && mouse &&
-        g_scheduler_active.load(std::memory_order_acquire) != 0) {
+        g_scheduler_active.load(std::memory_order_acquire) != 0 && g_fix_mouse.load(std::memory_order_relaxed) != 0) {
         auto* object = static_cast<uint8_t*>(objects);
         // Peeking does not consume the buffer, so it does not start a new collection interval.
         const bool peek = (flags & 1) != 0;  // DIGDD_PEEK

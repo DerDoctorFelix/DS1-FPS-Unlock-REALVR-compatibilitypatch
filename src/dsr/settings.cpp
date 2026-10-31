@@ -159,6 +159,22 @@ Settings settings_load(const wchar_t* dll_path) {
             s.fix_velocity = parse_bool(val);
         } else if (key == "fixscriptmemory") {
             s.fix_script_memory = parse_bool(val);
+        } else if (key == "externalframeunlock") {
+            s.external_unlock = parse_bool(val);
+        } else if (key == "fixmouse") {
+            s.fix_mouse = parse_bool(val);
+        } else if (key == "nolockonrecenter") {
+            s.no_recenter = parse_bool(val);
+        } else if (key == "skipintro") {
+            s.skip_intro = parse_bool(val);
+        } else if (key == "blockonline") {
+            s.block_online = parse_bool(val);
+        } else if (key == "cameraprobe") {
+            s.cam_probe = parse_bool(val);
+        } else if (key == "replaceretailsteps") {
+            s.replace_retail = parse_bool(val);
+        } else if (key == "fixhavokstep") {
+            s.fix_havok = parse_bool(val);
         } else if (key == "fixmovedt") {
             s.fix_move_dt = parse_bool(val);
         }
