@@ -1,0 +1,32 @@
+# Builds the Remastered dinput8.dll with MSVC on GitHub's Windows runners and uploads it, with the INI,
+# README and LICENSE, as a downloadable artifact of the run (Actions tab > the run > Artifacts).
+name: Build Remastered (MSVC)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build dinput8.dll
+        shell: cmd
+        run: build_dsr.bat
+      - name: Collect release files
+        shell: cmd
+        run: |
+          mkdir build\artifact
+          copy /y build\dsr\dinput8.dll build\artifact\
+          copy /y DSR-FPS-Unlock.ini build\artifact\
+          copy /y README.md build\artifact\
+          copy /y LICENSE build\artifact\
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DS1-FPS-Unlock-REMASTERED-REALVR
+          path: build/artifact/
